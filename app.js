@@ -1,3 +1,5 @@
+window.__stockAppLoaded = true;
+
 const BASE_COLUMNS = [
   { base: "CARRITO", col: "C" },
   { base: "LOCAL", col: "L" },
@@ -42,6 +44,7 @@ const compareBtn = document.getElementById("compareBtn");
 const statusBox = document.getElementById("status");
 const fileName = document.getElementById("fileName");
 const updatedAt = document.getElementById("updatedAt");
+const serverInfo = document.getElementById("serverInfo");
 const rowCount = document.getElementById("rowCount");
 const resultBox = document.getElementById("resultBox");
 const queryLabel = document.getElementById("queryLabel");
@@ -194,31 +197,98 @@ async function loadWorkbook() {
   }
 }
 
+async function loadWorkbookLocally(file, note = "") {
+  setStatus("Leyendo planilla en el navegador (puede tardar con archivos grandes)...");
+  const buffer = await file.arrayBuffer();
+  const payload = await parseWithWorker(buffer);
+  applyPayload(payload, file.name);
+  const suffix = note ? ` ${note}` : "";
+  setStatus(`Planilla cargada en este navegador.${suffix}`);
+}
+
 async function uploadAndLoadFromServer(file) {
   const data = new FormData();
   data.append("stock", file, file.name);
 
-  setStatus(`Subiendo ${file.name} al servidor...`);
-  const upload = await fetch("/api/upload", { method: "POST", body: data });
-  if (!upload.ok) throw new Error(await upload.text());
+  setStatus(`Subiendo ${file.name} al servidor (puede tardar 1-2 min, no cierres la página)...`);
 
-  const meta = await upload.json();
-  setStatus("Procesando planilla en el servidor...");
-  const response = await fetch(`/api/stock-data?t=${Date.now()}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(await response.text());
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 180000);
+    const upload = await fetch("/api/upload", {
+      method: "POST",
+      body: data,
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    const uploadText = await upload.text();
 
-  applyPayload(await response.json(), meta.name, meta);
-  await loadHistory();
-  setStatus(`Planilla cargada: ${meta.name} (${meta.productCount} productos).`);
+    if (!upload.ok) {
+      if (upload.status === 404) {
+        await loadWorkbookLocally(file, "El servidor no tiene /api/upload. Redeploy con el Dockerfile nuevo.");
+        return;
+      }
+      throw new Error(uploadText || `Error ${upload.status}`);
+    }
+
+    const meta = JSON.parse(uploadText);
+    setStatus("Procesando planilla en el servidor...");
+    const response = await fetch(`/api/stock-data?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) {
+      await loadWorkbookLocally(file, "No hay datos procesados en el servidor.");
+      return;
+    }
+
+    applyPayload(await response.json(), meta.name, meta);
+    await loadHistory();
+    setStatus(`Planilla cargada: ${meta.name} (${meta.productCount} productos).`);
+  } catch (error) {
+    resultBox.innerHTML = `<div class="empty">Error del servidor: ${escapeHtml(error.message)}</div>`;
+    try {
+      await loadWorkbookLocally(file, "Se usó lectura local porque el servidor falló.");
+    } catch (localError) {
+      throw new Error(`${error.message} | Local: ${localError.message}`);
+    }
+  }
+}
+
+async function checkServerVersion() {
+  try {
+    const response = await fetch("/api/version", { cache: "no-store" });
+    if (!response.ok) {
+      if (serverInfo) {
+        serverInfo.textContent = "Servidor VIEJO: falta /api/version. En Portainer hacé rebuild con el Dockerfile Python.";
+        serverInfo.style.color = "#b42318";
+      }
+      setStatus("Servidor antiguo detectado. La subida de planillas no va a funcionar hasta redeploy.");
+      return null;
+    }
+    const version = await response.json();
+    if (serverInfo) {
+      serverInfo.textContent = `Servidor v${version.version} OK`;
+      serverInfo.style.color = "";
+    }
+    return version;
+  } catch {
+    if (serverInfo) {
+      serverInfo.textContent = "No hay servidor Python (¿abrís el HTML directo o Nginx viejo?)";
+      serverInfo.style.color = "#b42318";
+    }
+    return null;
+  }
 }
 
 async function loadServerWorkbook() {
   if (!state.serverMode || location.protocol === "file:") return false;
 
+  const version = await checkServerVersion();
+
   try {
     const info = await fetch("/api/current", { cache: "no-store" });
     if (info.status === 404) {
-      setStatus("No hay planilla guardada en el servidor. Subí una para empezar.");
+      setStatus(version
+        ? `Servidor v${version.version} listo. Subí la planilla para empezar.`
+        : "No hay planilla guardada. Subí una para empezar.");
       return false;
     }
     if (!info.ok) throw new Error(await info.text());
@@ -650,6 +720,11 @@ exportCopyBtn.disabled = true;
 exportCsvBtn.disabled = true;
 compareBtn.disabled = true;
 
-loadServerWorkbook().then((loaded) => {
-  if (!loaded) setStatus("Subí la planilla de stock para empezar.");
-});
+if (!window.__stockAppLoaded) {
+  document.getElementById("status").textContent =
+    "No se cargó app.js. En Portainer tenés que usar el Dockerfile Python nuevo (no solo Nginx).";
+} else {
+  loadServerWorkbook().then((loaded) => {
+    if (!loaded) checkServerVersion();
+  });
+}

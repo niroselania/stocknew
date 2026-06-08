@@ -123,10 +123,8 @@ function normalizePath(path) {
   return parts.join("/");
 }
 
-async function unzipXlsx(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  const entries = {};
+function readZipCatalog(bytes, view) {
+  const catalog = new Map();
   const eocdOffset = findEndOfCentralDirectory(view);
   const centralDirectorySize = view.getUint32(eocdOffset + 12, true);
   const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
@@ -146,19 +144,52 @@ async function unzipXlsx(buffer) {
     const localNameLength = view.getUint16(localHeaderOffset + 26, true);
     const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
     const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
-    const compressed = bytes.slice(dataStart, dataStart + compressedSize);
-
     if (!name.endsWith("/")) {
-      let content;
-      if (compression === 0) content = compressed;
-      else if (compression === 8) content = await inflateRaw(compressed);
-      else throw new Error(`Compresión no soportada en ${name}.`);
-      if (name.endsWith(".xml") || name.endsWith(".rels")) {
-        entries[name] = new TextDecoder("utf-8").decode(content);
-      }
+      catalog.set(name, { compression, dataStart, compressedSize });
     }
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
+  return catalog;
+}
+
+async function readZipEntry(bytes, meta) {
+  const compressed = bytes.slice(meta.dataStart, meta.dataStart + meta.compressedSize);
+  if (meta.compression === 0) return compressed;
+  if (meta.compression === 8) return await inflateRaw(compressed);
+  throw new Error(`Compresión no soportada (${meta.compression}).`);
+}
+
+async function unzipXlsx(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const catalog = readZipCatalog(bytes, view);
+  const entries = {};
+
+  async function loadText(path) {
+    const name = normalizePath(path);
+    if (entries[name]) return entries[name];
+    const meta = catalog.get(name);
+    if (!meta) throw new Error(`Falta ${name} dentro del Excel.`);
+    const content = await readZipEntry(bytes, meta);
+    entries[name] = new TextDecoder("utf-8").decode(content);
+    return entries[name];
+  }
+
+  await loadText("xl/workbook.xml");
+  await loadText("xl/_rels/workbook.xml.rels");
+
+  const workbook = parseWorkbook(entries);
+  const needed = new Set(["xl/workbook.xml", "xl/_rels/workbook.xml.rels"]);
+  if (catalog.has("xl/sharedStrings.xml")) needed.add("xl/sharedStrings.xml");
+
+  const stockSheet = workbook.sheets.find((sheet) => normalize(sheet.name) === "STOCK");
+  if (!stockSheet) throw new Error("No encontré una pestaña llamada STOCK.");
+  needed.add(stockSheet.path);
+
+  const pendingSheet = workbook.sheets.find((sheet) => normalize(sheet.name) === "PENDIENTES");
+  if (pendingSheet) needed.add(pendingSheet.path);
+
+  for (const path of needed) await loadText(path);
   return entries;
 }
 

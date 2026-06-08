@@ -1,4 +1,4 @@
-const CACHE_NAME = "stock-buscador-v2";
+const CACHE_NAME = "stock-buscador-v3";
 const SHELL = [
   "/",
   "/stock-buscador.html",

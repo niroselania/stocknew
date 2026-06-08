@@ -1,0 +1,18 @@
+# Pegá esto tal cual en Portainer > Stacks > Web editor
+services:
+  stock-buscador:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stock-buscador:2.1.0
+    container_name: stock-buscador
+    restart: unless-stopped
+    ports:
+      - "8088:8000"
+    volumes:
+      - stock-data:/data
+    environment:
+      HISTORY_MAX: "30"
+
+volumes:
+  stock-data:

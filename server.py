@@ -117,6 +117,15 @@ class StockHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists()})
 
+        if path == "/api/version":
+            return self.send_json(
+                {
+                    "version": "2.1.0",
+                    "uploadFix": True,
+                    "features": ["history", "compare", "stock-data", "preprocess"],
+                }
+            )
+
         if path == "/api/current":
             if not STOCK_FILE.exists() or not META_FILE.exists():
                 return self.send_text("No hay planilla cargada", status=404)
@@ -270,10 +279,17 @@ def ensure_processed_stock() -> None:
 
 
 if __name__ == "__main__":
+    try:
+        import openpyxl
+
+        print(f"openpyxl {openpyxl.__version__} OK", flush=True)
+    except ImportError as error:
+        print(f"ERROR: falta openpyxl ({error}). Rebuild la imagen Docker.", flush=True)
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ensure_processed_stock()
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StockHandler)
-    print(f"Stock server listening on {port}", flush=True)
+    print(f"Stock server v2.1.0 listening on {port}", flush=True)
     server.serve_forever()
