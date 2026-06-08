@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <title>Buscador de stock</title>
+  <style>
+    :root {
+      --bg: #f6f7f3;
+      --panel: #ffffff;
+      --ink: #1e2528;
+      --muted: #667176;
+      --line: #d9dfdd;
+      --brand: #0f766e;
+      --brand-dark: #115e59;
+      --accent: #b45309;
+      --danger: #b42318;
+      --soft: #eef7f5;
+      --shadow: 0 18px 45px rgba(30, 37, 40, .10);
+      --aside-bg: #263238;
+      --aside-ink: #fff;
+      --aside-muted: #c9d3d5;
+      --aside-line: rgba(255,255,255,.18);
+      --aside-input-bg: rgba(255,255,255,.08);
+      --up: #067647;
+      --down: #b42318;
+    }
+
+    html[data-theme="dark"] {
+      --bg: #12181b;
+      --panel: #1b2428;
+      --ink: #edf2f4;
+      --muted: #9aa7ad;
+      --line: #2d3a40;
+      --brand: #2dd4bf;
+      --brand-dark: #14b8a6;
+      --soft: #172126;
+      --shadow: 0 18px 45px rgba(0, 0, 0, .35);
+      --aside-bg: #0f1518;
+      --aside-ink: #edf2f4;
+      --aside-muted: #9aa7ad;
+      --aside-line: #2d3a40;
+      --aside-input-bg: #172126;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+    }
+
+    aside {
+      background: var(--aside-bg);
+      color: var(--aside-ink);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 {
+      font-size: 24px;
+      line-height: 1.16;
+      font-weight: 800;
+    }
+
+    .sub {
+      color: var(--aside-muted);
+      font-size: 14px;
+      line-height: 1.45;
+      margin-top: 8px;
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+    }
+
+    label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--aside-muted);
+      font-weight: 700;
+    }
+
+    input[type="file"],
+    input[type="text"],
+    select {
+      width: 100%;
+      border: 1px solid var(--aside-line);
+      background: var(--aside-input-bg);
+      color: var(--aside-ink);
+      border-radius: 6px;
+      min-height: 44px;
+      padding: 10px 12px;
+      font-size: 15px;
+      outline: none;
+    }
+
+    input[type="file"] {
+      padding: 9px;
+      font-size: 13px;
+    }
+
+    input[type="text"]::placeholder { color: var(--aside-muted); }
+
+    input[type="text"]:focus,
+    select:focus {
+      border-color: #5eead4;
+      box-shadow: 0 0 0 3px rgba(94, 234, 212, .16);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 6px;
+      min-height: 42px;
+      padding: 0 14px;
+      color: #fff;
+      background: var(--brand);
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    button:hover { background: var(--brand-dark); }
+    button.secondary { background: #46565c; }
+    button.secondary:hover { background: #37464b; }
+    button.ghost {
+      background: transparent;
+      border: 1px solid var(--aside-line);
+      color: var(--aside-ink);
+    }
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    .link-btn {
+      border: 0;
+      background: transparent;
+      color: #5eead4;
+      min-height: auto;
+      padding: 0;
+      font-weight: 700;
+    }
+
+    .status {
+      min-height: 40px;
+      color: var(--aside-muted);
+      font-size: 13px;
+      line-height: 1.35;
+      padding: 12px;
+      background: rgba(255,255,255,.07);
+      border: 1px solid var(--aside-line);
+      border-radius: 6px;
+    }
+
+    main {
+      padding: 24px;
+      display: grid;
+      gap: 20px;
+      align-content: start;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .file-name,
+    .muted {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .section-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .section-head h2 {
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .section-body { padding: 18px; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: var(--soft);
+    }
+
+    .card .name {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .card .qty {
+      margin-top: 8px;
+      font-size: 30px;
+      font-weight: 900;
+      color: var(--brand-dark);
+      line-height: 1;
+    }
+
+    .product {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+      padding: 14px;
+      border-radius: 8px;
+      background: var(--soft);
+      border: 1px solid var(--line);
+    }
+
+    .kv span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .kv strong {
+      display: block;
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.45;
+      padding: 18px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      max-height: 64vh;
+      border-top: 1px solid var(--line);
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 900px;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.up, .pill.up { color: var(--up); }
+    td.down, .pill.down { color: var(--down); }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      color: #5f3b03;
+      background: #fff4d6;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .filters {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr auto;
+      gap: 10px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+    }
+
+    .filters input,
+    .filters select {
+      background: var(--panel);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      min-height: 40px;
+    }
+
+    .filters label {
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .history-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .history-item:last-child { border-bottom: 0; }
+
+    .compare-summary {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.72);
+      display: grid;
+      place-items: center;
+      z-index: 20;
+      padding: 20px;
+    }
+
+    .modal-card {
+      width: min(520px, 100%);
+      background: var(--panel);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    #scannerVideo {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      aside { padding: 18px; }
+      main { padding: 16px; }
+      .filters { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div>
+        <h1>Buscador de stock</h1>
+        <p class="sub">Cargá la planilla renovada, buscá por SKU color talle y compará con versiones anteriores.</p>
+      </div>
+
+      <div class="control">
+        <label for="fileInput">Planilla Excel</label>
+        <input id="fileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      </div>
+
+      <div class="control">
+        <label for="searchInput">SKU color talle</label>
+        <input id="searchInput" type="text" placeholder="Ej: 25551 NLSA M" autocomplete="off">
+      </div>
+
+      <div class="row">
+        <button id="searchBtn" disabled>Buscar</button>
+        <button id="stockBtn" class="secondary" disabled>Stock completo</button>
+      </div>
+
+      <div class="row">
+        <button id="scanBtn" class="ghost">Escanear código</button>
+        <button id="themeBtn" class="ghost">Modo oscuro</button>
+      </div>
+
+      <div class="row">
+        <button id="exportCopyBtn" class="secondary" disabled>Copiar resultado</button>
+        <button id="exportCsvBtn" class="secondary" disabled>Exportar CSV</button>
+      </div>
+
+      <button id="compareBtn" class="secondary" disabled>Comparar con planilla anterior</button>
+
+      <div id="status" class="status">Elegí la planilla de stock para empezar.</div>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <div>
+          <h2>Consulta rápida</h2>
+          <p id="fileName" class="file-name">Sin archivo cargado</p>
+          <p id="updatedAt" class="muted"></p>
+        </div>
+        <span id="rowCount" class="pill">0 productos</span>
+      </div>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Resultado</h2>
+          <span id="queryLabel" class="file-name"></span>
+        </div>
+        <div class="section-body" id="resultBox">
+          <div class="empty">Cuando cargues la planilla y busques un código, acá aparecen las bases con stock.</div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Total por base</h2>
+          <span class="file-name">Calculado desde STOCK y PENDIENTES</span>
+        </div>
+        <div class="section-body">
+          <div id="totalsBox" class="cards"></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Historial de planillas</h2>
+          <span class="file-name">Últimas cargas guardadas en el servidor</span>
+        </div>
+        <div class="section-body" id="historyBox">
+          <div class="empty">El historial aparece cuando la app corre con el servidor Python.</div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Comparación de stock</h2>
+          <span class="file-name">Diferencias contra otra planilla del historial</span>
+        </div>
+        <div class="section-body" id="compareBox">
+          <div class="empty">Usá “Comparar con planilla anterior” o elegí una del historial.</div>
+        </div>
+      </section>
+
+      <section id="stockSection" class="section hidden">
+        <div class="section-head">
+          <h2>STOCK completo</h2>
+          <span id="stockInfo" class="file-name"></span>
+        </div>
+        <div class="filters">
+          <input id="stockFilterText" type="text" placeholder="Filtrar por SKU o CONCAT">
+          <select id="stockFilterLinea">
+            <option value="">Todas las líneas</option>
+          </select>
+          <label><input id="stockFilterOnly" type="checkbox"> Solo con stock</label>
+        </div>
+        <div id="stockTable" class="table-wrap"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="scannerModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Escanear código</strong>
+        <button id="scannerClose" class="secondary">Cerrar</button>
+      </div>
+      <video id="scannerVideo" playsinline muted></video>
+    </div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
