@@ -211,17 +211,17 @@ class StockHandler(BaseHTTPRequestHandler):
         if not field.filename.lower().endswith(".xlsx"):
             return self.send_text("El archivo debe ser .xlsx", status=400)
 
-        tmp_file = DATA_DIR / "stock.xlsx.tmp"
-        with tmp_file.open("wb") as output:
+        upload_file = DATA_DIR / "stock-upload.xlsx"
+        with upload_file.open("wb") as output:
             shutil.copyfileobj(field.file, output)
 
         try:
-            meta = process_upload(tmp_file, Path(field.filename).name)
-            tmp_file.replace(STOCK_FILE)
+            meta = process_upload(upload_file, Path(field.filename).name)
+            upload_file.replace(STOCK_FILE)
             self.send_json(meta)
         except Exception as error:
-            if tmp_file.exists():
-                tmp_file.unlink()
+            if upload_file.exists():
+                upload_file.unlink()
             self.send_text(f"No pude procesar la planilla: {error}", status=400)
 
     def send_file(self, path, content_type, no_cache=False):

@@ -174,15 +174,19 @@ async function loadWorkbook() {
 
   searchBtn.disabled = true;
   stockBtn.disabled = true;
-  setStatus("Leyendo archivo Excel en segundo plano...");
   resultBox.innerHTML = '<div class="empty">Leyendo la planilla...</div>';
 
   try {
+    if (state.serverMode && location.protocol !== "file:") {
+      await uploadAndLoadFromServer(file);
+      return;
+    }
+
+    setStatus("Leyendo archivo Excel en segundo plano...");
     const buffer = await file.arrayBuffer();
     const payload = await parseWithWorker(buffer);
     applyPayload(payload, file.name);
     setStatus("Planilla cargada en el navegador.");
-    await saveWorkbookToServer(file);
   } catch (error) {
     console.error(error);
     setStatus(`No pude leer la planilla: ${error.message}`);
@@ -190,24 +194,22 @@ async function loadWorkbook() {
   }
 }
 
-async function saveWorkbookToServer(file) {
-  if (!state.serverMode || location.protocol === "file:") return;
-
+async function uploadAndLoadFromServer(file) {
   const data = new FormData();
   data.append("stock", file, file.name);
 
-  try {
-    setStatus("Guardando y procesando en el servidor...");
-    const response = await fetch("/api/upload", { method: "POST", body: data });
-    if (!response.ok) throw new Error(await response.text());
-    const saved = await response.json();
-    state.meta = saved;
-    updatedAt.textContent = `Actualizada: ${formatDate(saved.uploadedAt)}`;
-    await loadHistory();
-    setStatus(`Planilla guardada: ${saved.name}.`);
-  } catch (error) {
-    setStatus(`La planilla se leyó localmente, pero no se guardó en el servidor: ${error.message}`);
-  }
+  setStatus(`Subiendo ${file.name} al servidor...`);
+  const upload = await fetch("/api/upload", { method: "POST", body: data });
+  if (!upload.ok) throw new Error(await upload.text());
+
+  const meta = await upload.json();
+  setStatus("Procesando planilla en el servidor...");
+  const response = await fetch(`/api/stock-data?t=${Date.now()}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(await response.text());
+
+  applyPayload(await response.json(), meta.name, meta);
+  await loadHistory();
+  setStatus(`Planilla cargada: ${meta.name} (${meta.productCount} productos).`);
 }
 
 async function loadServerWorkbook() {
