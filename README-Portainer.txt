@@ -17,7 +17,7 @@ services:
     container_name: stock-buscador
     restart: unless-stopped
     ports:
-      - "8088:8000"
+      - "8085:8000"
     volumes:
       - stock-data:/data
     environment:
@@ -27,7 +27,7 @@ volumes:
   stock-data:
 
 4. Deploy the stack.
-5. Abrilo en http://IP-DE-TU-SERVIDOR:8088
+5. Abrilo en http://IP-DE-TU-SERVIDOR:8085
 
 Si ya tenías la versión anterior con volumen en /opt/stock-buscador/data,
 podés usar docker-compose-portainer-con-planilla.yml.
@@ -38,6 +38,6 @@ Novedades:
 - Filtros en stock completo, exportar resultado, escáner, PWA y modo oscuro.
 
 Notas:
-- Si el puerto 8088 está ocupado, cambialo por otro, por ejemplo "8090:8000".
+- Si el puerto 8085 está ocupado, cambialo por otro, por ejemplo "8090:8000".
 - HISTORY_MAX controla cuántas planillas viejas se conservan (default 30).
 - La primera vez que arranque con una planilla vieja, el servidor la reprocesa solo.

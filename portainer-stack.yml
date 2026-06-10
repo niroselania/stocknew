@@ -8,7 +8,7 @@ services:
     container_name: stock-buscador
     restart: unless-stopped
     ports:
-      - "8088:8000"
+      - "8085:8000"
     volumes:
       - stock-data:/data
     environment:
