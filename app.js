@@ -29,7 +29,7 @@ const state = {
   lastSearch: null,
   stockVisible: false,
   serverMode: location.protocol === "http:" || location.protocol === "https:",
-  stockFilter: { text: "", linea: "", onlyStock: false },
+  stockFilter: { text: "", linea: "", base: "", onlyStock: false },
   virtualScrollTop: 0
 };
 
@@ -55,6 +55,7 @@ const stockTable = document.getElementById("stockTable");
 const stockInfo = document.getElementById("stockInfo");
 const stockFilterText = document.getElementById("stockFilterText");
 const stockFilterLinea = document.getElementById("stockFilterLinea");
+const stockFilterBase = document.getElementById("stockFilterBase");
 const stockFilterOnly = document.getElementById("stockFilterOnly");
 const historyBox = document.getElementById("historyBox");
 const compareBox = document.getElementById("compareBox");
@@ -142,6 +143,7 @@ function applyPayload(payload, displayName, meta = null) {
   exportCsvBtn.disabled = false;
 
   populateLineaFilter();
+  populateBaseFilter();
   renderTotals();
   renderHistory();
   stockTable.innerHTML = "";
@@ -157,6 +159,13 @@ function populateLineaFilter() {
   stockFilterLinea.innerHTML = '<option value="">Todas las líneas</option>' +
     state.lineas.map((linea) => `<option value="${escapeHtml(linea)}">${escapeHtml(linea)}</option>`).join("");
   stockFilterLinea.value = current;
+}
+
+function populateBaseFilter() {
+  const current = state.stockFilter.base;
+  stockFilterBase.innerHTML = '<option value="">Todas las bases</option>' +
+    BASE_COLUMNS.map((base) => `<option value="${escapeHtml(base.base)}">${escapeHtml(base.base)}</option>`).join("");
+  stockFilterBase.value = current;
 }
 
 async function parseWithWorker(buffer) {
@@ -471,10 +480,10 @@ function searchStock() {
   resultBox.innerHTML = productHtml + `
     <div class="cards">
       ${available.map((item) => `
-        <div class="card">
+        <button class="card card-button" type="button" data-base="${escapeHtml(item.base)}" title="Ver todos los productos con stock en ${escapeHtml(item.base)}">
           <div class="name">${escapeHtml(item.base)}</div>
           <div class="qty">${formatQty(item.qty)}</div>
-        </div>
+        </button>
       `).join("")}
     </div>`;
 }
@@ -487,10 +496,10 @@ function renderTotals() {
   }
 
   totalsBox.innerHTML = totals.map(([base, qty]) => `
-    <div class="card">
+    <button class="card card-button" type="button" data-base="${escapeHtml(base)}" title="Ver todos los productos con stock en ${escapeHtml(base)}">
       <div class="name">${escapeHtml(base)}</div>
       <div class="qty">${formatQty(qty)}</div>
-    </div>
+    </button>
   `).join("");
 }
 
@@ -520,15 +529,32 @@ function getFilteredRows() {
   const lineaCol = findHeaderIndex(state.stockHeader, "LINEA");
   const text = normalize(state.stockFilter.text);
   const linea = normalize(state.stockFilter.linea);
+  const base = BASE_COLUMNS.find((item) => item.base === state.stockFilter.base);
+  const baseCol = base ? findHeaderIndex(state.stockHeader, base.col) : -1;
 
   return state.stockRows.filter((row) => {
     if (state.stockFilter.onlyStock && !rowHasStock(row)) return false;
+    if (base && (baseCol < 0 || asNumber(row[baseCol]) <= 0)) return false;
     if (linea && normalize(row[lineaCol]) !== linea) return false;
     if (!text) return true;
     const concat = concatCol >= 0 ? normalize(row[concatCol]) : "";
     const sku = skuCol >= 0 ? normalize(row[skuCol]) : "";
     return concat.includes(text) || sku.includes(text);
   });
+}
+
+function showBaseStock(base) {
+  if (!BASE_COLUMNS.some((item) => item.base === base)) return;
+  state.stockFilter.base = base;
+  stockFilterBase.value = base;
+  state.stockFilter.onlyStock = true;
+  stockFilterOnly.checked = true;
+  state.virtualScrollTop = 0;
+  state.stockVisible = true;
+  stockSection.classList.remove("hidden");
+  stockBtn.textContent = "Ocultar stock";
+  renderStockTable();
+  stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderStockTable() {
@@ -706,9 +732,22 @@ stockFilterLinea.addEventListener("change", () => {
   state.stockFilter.linea = stockFilterLinea.value;
   if (state.stockVisible) renderStockTable();
 });
+stockFilterBase.addEventListener("change", () => {
+  state.stockFilter.base = stockFilterBase.value;
+  state.virtualScrollTop = 0;
+  if (state.stockVisible) renderStockTable();
+});
 stockFilterOnly.addEventListener("change", () => {
   state.stockFilter.onlyStock = stockFilterOnly.checked;
   if (state.stockVisible) renderStockTable();
+});
+totalsBox.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-base]");
+  if (button) showBaseStock(button.dataset.base);
+});
+resultBox.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-base]");
+  if (button) showBaseStock(button.dataset.base);
 });
 stockTable.addEventListener("scroll", () => {
   state.virtualScrollTop = stockTable.scrollTop;

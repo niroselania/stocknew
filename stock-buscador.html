@@ -235,6 +235,21 @@
       background: var(--soft);
     }
 
+    button.card-button {
+      display: block;
+      width: 100%;
+      min-height: 0;
+      padding: 14px;
+      color: var(--ink);
+      text-align: left;
+      background: var(--soft);
+    }
+
+    button.card-button:hover {
+      background: #d8eeea;
+      border-color: var(--brand);
+    }
+
     .card .name {
       color: var(--muted);
       font-size: 12px;
@@ -335,7 +350,7 @@
 
     .filters {
       display: grid;
-      grid-template-columns: 1.4fr 1fr auto;
+      grid-template-columns: 1.4fr 1fr 1fr auto;
       gap: 10px;
       padding: 16px 18px;
       border-bottom: 1px solid var(--line);
@@ -520,6 +535,9 @@
           <input id="stockFilterText" type="text" placeholder="Filtrar por SKU o CONCAT">
           <select id="stockFilterLinea">
             <option value="">Todas las líneas</option>
+          </select>
+          <select id="stockFilterBase">
+            <option value="">Todas las bases</option>
           </select>
           <label><input id="stockFilterOnly" type="checkbox"> Solo con stock</label>
         </div>
