@@ -22,6 +22,7 @@ const state = {
   index: {},
   inventory: {},
   totals: {},
+  baseStats: {},
   lineas: [],
   pendingByConcat: {},
   meta: null,
@@ -29,7 +30,7 @@ const state = {
   lastSearch: null,
   stockVisible: false,
   serverMode: location.protocol === "http:" || location.protocol === "https:",
-  stockFilter: { text: "", linea: "", base: "", onlyStock: false },
+  stockFilter: { text: "", linea: "", base: "", negativeBase: "", onlyStock: false },
   virtualScrollTop: 0
 };
 
@@ -50,6 +51,7 @@ const rowCount = document.getElementById("rowCount");
 const resultBox = document.getElementById("resultBox");
 const queryLabel = document.getElementById("queryLabel");
 const totalsBox = document.getElementById("totalsBox");
+const qualityBox = document.getElementById("qualityBox");
 const stockSection = document.getElementById("stockSection");
 const stockTable = document.getElementById("stockTable");
 const stockInfo = document.getElementById("stockInfo");
@@ -126,6 +128,7 @@ function applyPayload(payload, displayName, meta = null) {
   state.index = payload.index || {};
   state.inventory = payload.inventory || {};
   state.totals = payload.totals || {};
+  state.baseStats = calculateBaseStats();
   state.lineas = payload.lineas || [];
   state.pendingByConcat = payload.pendingByConcat || {};
   state.meta = meta;
@@ -145,6 +148,7 @@ function applyPayload(payload, displayName, meta = null) {
   populateLineaFilter();
   populateBaseFilter();
   renderTotals();
+  renderQuality();
   renderHistory();
   stockTable.innerHTML = "";
   state.stockVisible = false;
@@ -503,6 +507,48 @@ function renderTotals() {
   `).join("");
 }
 
+function calculateBaseStats() {
+  const stats = {};
+  for (const base of BASE_COLUMNS) {
+    const colIndex = findHeaderIndex(state.stockHeader, base.col);
+    let positiveProducts = 0;
+    let negativeCells = 0;
+    let negativeQty = 0;
+    for (const row of state.stockRows) {
+      const qty = colIndex >= 0 ? asNumber(row[colIndex]) : 0;
+      if (qty > 0) positiveProducts += 1;
+      if (qty < 0) {
+        negativeCells += 1;
+        negativeQty += qty;
+      }
+    }
+    stats[base.base] = { positiveProducts, negativeCells, negativeQty };
+  }
+  return stats;
+}
+
+function renderQuality() {
+  const stats = Object.entries(state.baseStats || {});
+  if (!stats.length) {
+    qualityBox.innerHTML = '<div class="empty">Cargá una planilla para ver alertas y controles.</div>';
+    return;
+  }
+  const negativeCells = stats.reduce((sum, [, stat]) => sum + stat.negativeCells, 0);
+  const activeBases = stats.filter(([, stat]) => stat.positiveProducts > 0).length;
+  const negativeBases = stats.filter(([, stat]) => stat.negativeCells > 0);
+  qualityBox.innerHTML = `
+    <div class="alert-grid">
+      <div class="alert-card"><div class="label">Productos cargados</div><div class="value">${formatQty(state.stockRows.length)}</div></div>
+      <div class="alert-card"><div class="label">Bases activas</div><div class="value">${formatQty(activeBases)}</div></div>
+      <div class="alert-card ${negativeCells ? "danger" : ""}"><div class="label">Registros negativos</div><div class="value">${formatQty(negativeCells)}</div></div>
+    </div>
+    <div class="base-health" style="margin-top:16px">
+      ${negativeBases.length
+        ? negativeBases.map(([base, stat]) => `<button class="base-health-row link-btn" data-negative-base="${escapeHtml(base)}"><span>${escapeHtml(base)}: ${formatQty(stat.negativeCells)} registro(s) negativo(s)</span><span>Ver detalle</span></button>`).join("")
+        : '<div class="empty">No hay stock negativo en las bases cargadas.</div>'}
+    </div>`;
+}
+
 function toggleStock() {
   state.stockVisible = !state.stockVisible;
   if (state.stockVisible) {
@@ -531,10 +577,13 @@ function getFilteredRows() {
   const linea = normalize(state.stockFilter.linea);
   const base = BASE_COLUMNS.find((item) => item.base === state.stockFilter.base);
   const baseCol = base ? findHeaderIndex(state.stockHeader, base.col) : -1;
+  const negativeBase = BASE_COLUMNS.find((item) => item.base === state.stockFilter.negativeBase);
+  const negativeCol = negativeBase ? findHeaderIndex(state.stockHeader, negativeBase.col) : -1;
 
   return state.stockRows.filter((row) => {
     if (state.stockFilter.onlyStock && !rowHasStock(row)) return false;
     if (base && (baseCol < 0 || asNumber(row[baseCol]) <= 0)) return false;
+    if (negativeBase && (negativeCol < 0 || asNumber(row[negativeCol]) >= 0)) return false;
     if (linea && normalize(row[lineaCol]) !== linea) return false;
     if (!text) return true;
     const concat = concatCol >= 0 ? normalize(row[concatCol]) : "";
@@ -546,6 +595,7 @@ function getFilteredRows() {
 function showBaseStock(base) {
   if (!BASE_COLUMNS.some((item) => item.base === base)) return;
   state.stockFilter.base = base;
+  state.stockFilter.negativeBase = "";
   stockFilterBase.value = base;
   state.stockFilter.onlyStock = true;
   stockFilterOnly.checked = true;
@@ -557,10 +607,31 @@ function showBaseStock(base) {
   stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function showNegativeBaseStock(base) {
+  const item = BASE_COLUMNS.find((entry) => entry.base === base);
+  if (!item) return;
+  const colIndex = findHeaderIndex(state.stockHeader, item.col);
+  if (colIndex < 0) return;
+  state.stockFilter.base = "";
+  state.stockFilter.negativeBase = base;
+  stockFilterBase.value = "";
+  state.stockFilter.onlyStock = false;
+  stockFilterOnly.checked = false;
+  state.stockFilter.text = "";
+  stockFilterText.value = "";
+  state.stockVisible = true;
+  stockSection.classList.remove("hidden");
+  stockBtn.textContent = "Ocultar stock";
+  state.virtualScrollTop = 0;
+  renderStockTable();
+  stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function renderStockTable() {
   const header = state.stockHeader;
   const rows = getFilteredRows();
-  stockInfo.textContent = `${rows.length} filas visibles`;
+  const negativeLabel = state.stockFilter.negativeBase ? ` · negativos en ${state.stockFilter.negativeBase}` : "";
+  stockInfo.textContent = `${rows.length} filas visibles${negativeLabel}`;
 
   const viewportHeight = stockTable.clientHeight || 480;
   const visibleCount = Math.ceil(viewportHeight / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2;
@@ -734,6 +805,7 @@ stockFilterLinea.addEventListener("change", () => {
 });
 stockFilterBase.addEventListener("change", () => {
   state.stockFilter.base = stockFilterBase.value;
+  state.stockFilter.negativeBase = "";
   state.virtualScrollTop = 0;
   if (state.stockVisible) renderStockTable();
 });
@@ -748,6 +820,10 @@ totalsBox.addEventListener("click", (event) => {
 resultBox.addEventListener("click", (event) => {
   const button = event.target.closest("[data-base]");
   if (button) showBaseStock(button.dataset.base);
+});
+qualityBox.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-negative-base]");
+  if (button) showNegativeBaseStock(button.dataset.negativeBase);
 });
 stockTable.addEventListener("scroll", () => {
   state.virtualScrollTop = stockTable.scrollTop;
