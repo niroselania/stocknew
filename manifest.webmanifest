@@ -1,11 +1,11 @@
 {
-  "name": "Buscador de stock",
+  "name": "Stock · Centro de control",
   "short_name": "Stock",
-  "description": "Consulta de stock por SKU, color y talle.",
+  "description": "Consulta de stock por SKU, color y talle, con historial y comparación.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f6f7f3",
-  "theme_color": "#0f766e",
+  "background_color": "#060a13",
+  "theme_color": "#060a13",
   "lang": "es-AR",
   "icons": [
     {

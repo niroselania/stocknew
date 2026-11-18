@@ -9,6 +9,8 @@ services:
       - stock-data:/data
     environment:
       HISTORY_MAX: "30"
+      # Opcional: pedir un código para subir o borrar planillas
+      # UPLOAD_TOKEN: "cambiar-este-codigo"
 
 volumes:
   stock-data:

@@ -33,7 +33,33 @@ function findHeaderIndex(header, name) {
 }
 
 function isTotalRow(row) {
-  return row.some((cell) => normalize(cell) === "TOTAL");
+  return row.some((cell) => typeof cell === "string" && normalize(cell) === "TOTAL");
+}
+
+// Nota: DOMParser NO existe dentro de un Web Worker, por eso el XML se lee con expresiones regulares.
+function decodeXml(text) {
+  return String(text ?? "").replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|amp|quot|apos);/g, (_, code) => {
+    if (code === "lt") return "<";
+    if (code === "gt") return ">";
+    if (code === "amp") return "&";
+    if (code === "quot") return '"';
+    if (code === "apos") return "'";
+    if (code[1] === "x") return String.fromCodePoint(parseInt(code.slice(2), 16));
+    return String.fromCodePoint(parseInt(code.slice(1), 10));
+  });
+}
+
+function attr(attrs, name) {
+  const match = new RegExp(`(?:^|\\s)${name.replace(":", "\\:")}="([^"]*)"`).exec(attrs);
+  return match ? decodeXml(match[1]) : null;
+}
+
+function joinTextNodes(xml) {
+  let out = "";
+  const re = /<(?:\w+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:\w+:)?t>/g;
+  let m;
+  while ((m = re.exec(xml))) out += m[1];
+  return decodeXml(out);
 }
 
 function parseWorkbook(zip) {
@@ -44,58 +70,60 @@ function parseWorkbook(zip) {
     : [];
 
   const rels = {};
-  for (const rel of relsXml.getElementsByTagName("Relationship")) {
-    const target = rel.getAttribute("Target") || "";
-    rels[rel.getAttribute("Id")] = normalizePath(
-      target.startsWith("/") ? target.slice(1) : "xl/" + target
-    );
+  for (const m of relsXml.matchAll(/<(?:\w+:)?Relationship\b([^>]*)>/g)) {
+    const target = attr(m[1], "Target") || "";
+    rels[attr(m[1], "Id")] = normalizePath(target.startsWith("/") ? target.slice(1) : "xl/" + target);
   }
 
   const sheets = [];
-  for (const sheet of workbookXml.getElementsByTagName("sheet")) {
-    const relId = sheet.getAttribute("r:id") || sheet.getAttribute("id");
-    sheets.push({ name: sheet.getAttribute("name"), path: rels[relId] });
+  for (const m of workbookXml.matchAll(/<(?:\w+:)?sheet\b([^>]*)>/g)) {
+    const relId = attr(m[1], "r:id") || attr(m[1], "id");
+    sheets.push({ name: attr(m[1], "name"), path: rels[relId] });
   }
-
   return { sheets, sharedStrings };
 }
 
 function parseSharedStrings(xml) {
-  return Array.from(xml.getElementsByTagName("si")).map((si) =>
-    Array.from(si.getElementsByTagName("t"))
-      .map((node) => node.textContent || "")
-      .join("")
-  );
+  const out = [];
+  // Ignora las guías fonéticas (<rPh>) para no duplicar texto.
+  const clean = xml.replace(/<(?:\w+:)?rPh\b[\s\S]*?<\/(?:\w+:)?rPh>/g, "");
+  for (const m of clean.matchAll(/<(?:\w+:)?si\b[^>]*?(?:\/>|>([\s\S]*?)<\/(?:\w+:)?si>)/g)) {
+    out.push(m[1] ? joinTextNodes(m[1]) : "");
+  }
+  return out;
 }
 
 function parseSheet(zip, path, sharedStrings) {
   const xml = getXml(zip, path);
   const rows = [];
-  for (const rowNode of xml.getElementsByTagName("row")) {
+  const rowRe = /<(?:\w+:)?row\b[^>]*?(?:\/>|>([\s\S]*?)<\/(?:\w+:)?row>)/g;
+  const cellRe = /<(?:\w+:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:\w+:)?c>)/g;
+  let rowMatch;
+  while ((rowMatch = rowRe.exec(xml))) {
     const row = [];
-    for (const cell of rowNode.getElementsByTagName("c")) {
-      const ref = cell.getAttribute("r") || "";
+    const body = rowMatch[1] || "";
+    let cellMatch;
+    cellRe.lastIndex = 0;
+    while ((cellMatch = cellRe.exec(body))) {
+      const attrs = cellMatch[1];
+      const ref = attr(attrs, "r") || "";
       const index = ref ? columnIndex(ref.replace(/\d/g, "")) : row.length;
-      row[index] = readCell(cell, sharedStrings);
+      row[index] = readCell(attr(attrs, "t"), cellMatch[2] || "", sharedStrings);
     }
+    for (let i = 0; i < row.length; i++) if (row[i] === undefined) row[i] = "";
     rows.push(row);
   }
   return rows;
 }
 
-function readCell(cell, sharedStrings) {
-  const type = cell.getAttribute("t");
-  if (type === "inlineStr") {
-    return Array.from(cell.getElementsByTagName("t"))
-      .map((node) => node.textContent || "")
-      .join("");
-  }
-  const valueNode = cell.getElementsByTagName("v")[0];
-  if (!valueNode) return "";
-  const raw = valueNode.textContent || "";
+function readCell(type, inner, sharedStrings) {
+  if (type === "inlineStr") return joinTextNodes(inner);
+  const valueMatch = /<(?:\w+:)?v>([\s\S]*?)<\/(?:\w+:)?v>/.exec(inner);
+  if (!valueMatch) return "";
+  const raw = decodeXml(valueMatch[1]);
   if (type === "s") return sharedStrings[Number(raw)] ?? "";
   if (type === "b") return raw === "1";
-  if (type === "str") return raw;
+  if (type === "str" || type === "e") return raw;
   const numeric = Number(raw);
   return Number.isFinite(numeric) ? numeric : raw;
 }
@@ -111,7 +139,7 @@ function columnIndex(letters) {
 function getXml(zip, path) {
   const text = zip[normalizePath(path)];
   if (!text) throw new Error(`Falta ${path} dentro del Excel.`);
-  return new DOMParser().parseFromString(text, "application/xml");
+  return text;
 }
 
 function normalizePath(path) {
@@ -235,6 +263,7 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
   const talleCol = findHeaderIndex(header, "TALLE");
   const nombreCol = findHeaderIndex(header, "NOMBRE");
   const lineaCol = findHeaderIndex(header, "LINEA");
+  const baseCols = BASE_COLUMNS.map((base) => ({ base: base.base, colIndex: findHeaderIndex(header, base.col) }));
 
   const pendingByConcat = {};
   if (pendingRows.length && pendingQuantityCol >= 0) {
@@ -247,13 +276,13 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
   }
 
   const index = {};
-  const inventory = {};
   const rows = [];
   const lineas = new Set();
 
   for (let i = 1; i < stockRows.length; i++) {
     const row = stockRows[i];
     if (isTotalRow(row)) continue;
+    while (row.length < header.length) row.push("");
 
     const concatValue = concatCol >= 0 ? normalize(row[concatCol]) : "";
     const builtValue = normalize(
@@ -263,9 +292,8 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
     if (!key) continue;
 
     const bases = {};
-    for (const base of BASE_COLUMNS) {
-      const colIndex = findHeaderIndex(header, base.col);
-      bases[base.base] = colIndex >= 0 ? asNumber(row[colIndex]) : 0;
+    for (const { base, colIndex } of baseCols) {
+      bases[base] = colIndex >= 0 ? asNumber(row[colIndex]) : 0;
     }
     if (pendingByConcat[key] > 0) bases.PENDIENTES = pendingByConcat[key];
 
@@ -281,7 +309,6 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
     if (normalize(product.linea)) lineas.add(normalize(product.linea));
     rows.push(row);
     index[key] = product;
-    inventory[key] = { ...product, concat: key, bases, row };
   }
 
   const totals = {};
@@ -298,7 +325,7 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
   for (const base of BASE_COLUMNS) {
     const colIndex = findHeaderIndex(header, base.col);
     if (colIndex < 0) continue;
-    if (totalRow) totals[base.base] = asNumber(totalRow[colIndex]);
+    if (totalRow && totalRow[colIndex] !== undefined && totalRow[colIndex] !== "") totals[base.base] = asNumber(totalRow[colIndex]);
     else {
       for (const row of rows) totals[base.base] += asNumber(row[colIndex]);
     }
@@ -311,14 +338,10 @@ function buildPayload(stockRows, pendingRows, pendingQuantityCol, pendingConcatC
     header,
     rows,
     index,
-    inventory,
     pendingByConcat,
     totals,
     lineas: Array.from(lineas).sort(),
-    productCount: rows.length,
-    pendingRows,
-    pendingQuantityCol,
-    pendingConcatCol
+    productCount: rows.length
   };
 }
 

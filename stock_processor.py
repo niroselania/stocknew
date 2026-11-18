@@ -21,23 +21,40 @@ BASE_COLUMNS = [
     {"base": "PENDIENTES", "col": "P.PAGO"},
 ]
 
+_NUMBER_CLEAN = re.compile(r"[^\d.\-]")
+_SPACES = re.compile(r"\s+")
+
 
 def normalize(value: Any) -> str:
     text = "" if value is None else str(value)
     text = unicodedata.normalize("NFD", text)
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
-    text = re.sub(r"\s+", " ", text).strip().upper()
-    return text
+    return _SPACES.sub(" ", text).strip().upper()
 
 
 def as_number(value: Any) -> float:
+    if isinstance(value, bool):
+        return float(value)
     if isinstance(value, (int, float)):
         return float(value) if value == value else 0.0
-    cleaned = re.sub(r"[^\d.\-]", "", str(value or "").replace(",", "."))
+    cleaned = _NUMBER_CLEAN.sub("", str(value or "").replace(",", "."))
     try:
         return float(cleaned)
     except ValueError:
         return 0.0
+
+
+def clean_value(value: Any) -> Any:
+    """Valores serializables y compactos (sin None, enteros sin .0)."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 
 def find_header_index(header: list[Any], name: str) -> int:
@@ -49,21 +66,21 @@ def find_header_index(header: list[Any], name: str) -> int:
 
 
 def is_total_row(row: list[Any]) -> bool:
-    return any(normalize(cell) == "TOTAL" for cell in row)
+    return any(isinstance(cell, str) and normalize(cell) == "TOTAL" for cell in row)
 
 
-def sheet_rows(workbook_path: Path, sheet_name: str) -> list[list[Any]]:
+def read_sheets(workbook_path: Path, names: list[str]) -> dict[str, list[list[Any]] | None]:
+    """Abre el Excel una sola vez y devuelve las pestañas pedidas."""
     workbook = load_workbook(workbook_path, read_only=True, data_only=True)
     try:
-        wanted = normalize(sheet_name)
-        worksheet = None
-        for name in workbook.sheetnames:
-            if normalize(name) == wanted:
-                worksheet = workbook[name]
-                break
-        if worksheet is None:
-            raise ValueError(f"No encontré una pestaña llamada {sheet_name}.")
-        return [list(row) for row in worksheet.iter_rows(values_only=True)]
+        by_name = {normalize(name): name for name in workbook.sheetnames}
+        result: dict[str, list[list[Any]] | None] = {}
+        for wanted in names:
+            real = by_name.get(normalize(wanted))
+            result[wanted] = (
+                [list(row) for row in workbook[real].iter_rows(values_only=True)] if real else None
+            )
+        return result
     finally:
         workbook.close()
 
@@ -87,9 +104,13 @@ def detect_pending_columns(pending_rows: list[list[Any]]) -> tuple[int, int]:
 
 
 def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
-    stock_rows = sheet_rows(workbook_path, "STOCK")
+    sheets = read_sheets(workbook_path, ["STOCK", "PENDIENTES"])
+    stock_rows = sheets["STOCK"]
+    if stock_rows is None:
+        raise ValueError("No encontré una pestaña llamada STOCK.")
     if not stock_rows:
         raise ValueError("La pestaña STOCK está vacía.")
+    pending_rows = sheets["PENDIENTES"] or []
 
     header = list(stock_rows[0])
     concat_col = find_header_index(header, "CONCAT")
@@ -98,11 +119,8 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
     talle_col = find_header_index(header, "TALLE")
     nombre_col = find_header_index(header, "NOMBRE")
     linea_col = find_header_index(header, "LINEA")
-
-    try:
-        pending_rows = sheet_rows(workbook_path, "PENDIENTES")
-    except ValueError:
-        pending_rows = []
+    # Índices de columnas de bases calculados una sola vez (antes era por fila).
+    base_cols = [(base["base"], find_header_index(header, base["col"])) for base in BASE_COLUMNS]
 
     pending_qty_col, pending_concat_col = detect_pending_columns(pending_rows)
     pending_by_concat: dict[str, float] = {}
@@ -120,16 +138,22 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
     inventory: dict[str, dict[str, Any]] = {}
     data_rows: list[list[Any]] = []
     lineas: set[str] = set()
+    total_row = None
+    width = len(header)
+
+    def cell(values: list[Any], col: int) -> Any:
+        return clean_value(values[col]) if col >= 0 else ""
 
     for row in stock_rows[1:]:
         if is_total_row(row):
+            total_row = list(row) + [""] * max(0, width - len(row))
             continue
 
-        row_values = list(row) + [""] * max(0, len(header) - len(row))
+        row_values = list(row) + [""] * max(0, width - len(row))
         concat_value = normalize(row_values[concat_col]) if concat_col >= 0 else ""
         built_value = normalize(
             " ".join(
-                str(row_values[col])
+                str(clean_value(row_values[col]))
                 for col in (sku_col, color_col, talle_col)
                 if col >= 0 and row_values[col] not in (None, "")
             )
@@ -138,65 +162,40 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
         if not key:
             continue
 
-        bases: dict[str, float] = {}
-        for base in BASE_COLUMNS:
-            col_index = find_header_index(header, base["col"])
-            qty = as_number(row_values[col_index]) if col_index >= 0 else 0.0
-            bases[base["base"]] = qty
-
+        bases = {name: (as_number(row_values[col]) if col >= 0 else 0.0) for name, col in base_cols}
         pending_qty = pending_by_concat.get(key, 0.0)
         if pending_qty > 0:
             bases["PENDIENTES"] = pending_qty
 
         product = {
-            "concat": key,
-            "sku": row_values[sku_col] if sku_col >= 0 else "",
-            "color": row_values[color_col] if color_col >= 0 else "",
-            "talle": row_values[talle_col] if talle_col >= 0 else "",
-            "nombre": row_values[nombre_col] if nombre_col >= 0 else "",
-            "linea": row_values[linea_col] if linea_col >= 0 else "",
+            "sku": cell(row_values, sku_col),
+            "color": cell(row_values, color_col),
+            "talle": cell(row_values, talle_col),
+            "nombre": cell(row_values, nombre_col),
+            "linea": cell(row_values, linea_col),
             "bases": bases,
-            "row": ["" if value is None else value for value in row_values[: len(header)]],
         }
-
         linea = normalize(product["linea"])
         if linea:
             lineas.add(linea)
 
-        data_rows.append(product["row"])
-        index[key] = {
-            "sku": product["sku"],
-            "color": product["color"],
-            "talle": product["talle"],
-            "nombre": product["nombre"],
-            "linea": product["linea"],
-            "bases": bases,
-        }
-        inventory[key] = product
+        data_rows.append([clean_value(value) for value in row_values[:width]])
+        index[key] = product
+        inventory[key] = {"sku": product["sku"], "nombre": product["nombre"], "bases": bases}
 
-    totals: dict[str, float] = {base["base"]: 0.0 for base in BASE_COLUMNS}
-    total_row = None
-    for row in reversed(stock_rows[1:]):
-        if is_total_row(row):
-            total_row = list(row) + [""] * max(0, len(header) - len(row))
-            break
-
-    for base in BASE_COLUMNS:
-        col_index = find_header_index(header, base["col"])
-        if col_index < 0:
+    totals: dict[str, float] = {name: 0.0 for name, _ in base_cols}
+    for name, col in base_cols:
+        if col < 0:
             continue
-        if total_row is not None:
-            totals[base["base"]] = as_number(total_row[col_index])
+        if total_row is not None and total_row[col] not in (None, ""):
+            totals[name] = as_number(total_row[col])
         else:
-            totals[base["base"]] = sum(
-                as_number(row[col_index]) if col_index < len(row) else 0.0 for row in data_rows
-            )
-
+            totals[name] = sum(as_number(row[col]) for row in data_rows)
     if pending_by_concat:
         totals["PENDIENTES"] = sum(pending_by_concat.values())
 
     return {
-        "header": ["" if value is None else value for value in header],
+        "header": [clean_value(value) for value in header],
         "rows": data_rows,
         "index": index,
         "inventory": inventory,
@@ -204,12 +203,6 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
         "totals": totals,
         "lineas": sorted(lineas),
         "productCount": len(data_rows),
-        "pendingRows": [
-            ["" if value is None else value for value in row]
-            for row in pending_rows
-        ],
-        "pendingQuantityCol": pending_qty_col,
-        "pendingConcatCol": pending_concat_col,
     }
 
 
@@ -223,44 +216,35 @@ def compare_inventories(
     previous: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
-    keys = set(current) | set(previous)
 
-    for key in sorted(keys):
+    def add(key, item, base, before, after, kind):
+        changes.append(
+            {
+                "concat": key,
+                "sku": item.get("sku", ""),
+                "nombre": item.get("nombre", ""),
+                "base": base,
+                "before": before,
+                "after": after,
+                "delta": after - before,
+                "type": kind,
+            }
+        )
+
+    for key in sorted(set(current) | set(previous)):
         current_item = current.get(key)
         previous_item = previous.get(key)
 
         if current_item and not previous_item:
             for base, qty in current_item["bases"].items():
                 if qty > 0:
-                    changes.append(
-                        {
-                            "concat": key,
-                            "sku": current_item.get("sku", ""),
-                            "nombre": current_item.get("nombre", ""),
-                            "base": base,
-                            "before": 0.0,
-                            "after": qty,
-                            "delta": qty,
-                            "type": "new",
-                        }
-                    )
+                    add(key, current_item, base, 0.0, float(qty), "new")
             continue
 
         if previous_item and not current_item:
             for base, qty in previous_item["bases"].items():
                 if qty > 0:
-                    changes.append(
-                        {
-                            "concat": key,
-                            "sku": previous_item.get("sku", ""),
-                            "nombre": previous_item.get("nombre", ""),
-                            "base": base,
-                            "before": qty,
-                            "after": 0.0,
-                            "delta": -qty,
-                            "type": "removed",
-                        }
-                    )
+                    add(key, previous_item, base, float(qty), 0.0, "removed")
             continue
 
         current_bases = current_item["bases"]
@@ -268,27 +252,30 @@ def compare_inventories(
         for base in sorted(set(current_bases) | set(previous_bases)):
             before = float(previous_bases.get(base, 0.0))
             after = float(current_bases.get(base, 0.0))
-            if before == after:
-                continue
-            changes.append(
-                {
-                    "concat": key,
-                    "sku": current_item.get("sku", ""),
-                    "nombre": current_item.get("nombre", ""),
-                    "base": base,
-                    "before": before,
-                    "after": after,
-                    "delta": after - before,
-                    "type": "changed",
-                }
-            )
+            if before != after:
+                add(key, current_item, base, before, after, "changed")
 
+    by_base: dict[str, dict[str, float]] = {}
+    for item in changes:
+        entry = by_base.setdefault(item["base"], {"in": 0.0, "out": 0.0, "net": 0.0, "lines": 0})
+        entry["lines"] += 1
+        entry["net"] += item["delta"]
+        if item["delta"] > 0:
+            entry["in"] += item["delta"]
+        else:
+            entry["out"] += item["delta"]
+
+    new_keys = set(current) - set(previous)
+    removed_keys = set(previous) - set(current)
     summary = {
-        "newProducts": sum(1 for item in changes if item["type"] == "new" and item["base"] == "LOCAL"),
-        "removedProducts": sum(1 for item in changes if item["type"] == "removed" and item["base"] == "LOCAL"),
+        "newProducts": len(new_keys),
+        "removedProducts": len(removed_keys),
+        "changedProducts": len({item["concat"] for item in changes}),
         "changedLines": len(changes),
         "positive": sum(1 for item in changes if item["delta"] > 0),
         "negative": sum(1 for item in changes if item["delta"] < 0),
+        "unitsIn": sum(item["delta"] for item in changes if item["delta"] > 0),
+        "unitsOut": sum(item["delta"] for item in changes if item["delta"] < 0),
+        "byBase": by_base,
     }
-
     return {"changes": changes, "summary": summary}

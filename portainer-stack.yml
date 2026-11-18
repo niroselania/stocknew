@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: stock-buscador:2.1.0
+    image: stock-buscador:3.0.0
     container_name: stock-buscador
     restart: unless-stopped
     ports:
@@ -13,6 +13,8 @@ services:
       - stock-data:/data
     environment:
       HISTORY_MAX: "30"
+      # Opcional: pedir un código para subir o borrar planillas
+      # UPLOAD_TOKEN: "cambiar-este-codigo"
 
 volumes:
   stock-data:

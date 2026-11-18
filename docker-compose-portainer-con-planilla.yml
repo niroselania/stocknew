@@ -9,3 +9,5 @@ services:
       - /opt/stock-buscador/data:/data
     environment:
       HISTORY_MAX: "30"
+      # Opcional: pedir un código para subir o borrar planillas
+      # UPLOAD_TOKEN: "cambiar-este-codigo"

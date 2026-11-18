@@ -1,5 +1,8 @@
 window.__stockAppLoaded = true;
 
+/* =========================================================
+   Configuración
+   ========================================================= */
 const BASE_COLUMNS = [
   { base: "CARRITO", col: "C" },
   { base: "LOCAL", col: "L" },
@@ -12,97 +15,106 @@ const BASE_COLUMNS = [
   { base: "CONTROL", col: "CO" },
   { base: "PENDIENTES", col: "P.PAGO" }
 ];
-
-const VIRTUAL_ROW_HEIGHT = 32;
-const VIRTUAL_OVERSCAN = 8;
+const PENDING_BASE = "PENDIENTES";
+const ROW_H = 34;
+const OVERSCAN = 10;
+const SUGGEST_LIMIT = 8;
+const RECENT_MAX = 8;
+const COMPARE_PAGE = 400;
 
 const state = {
-  stockHeader: [],
-  stockRows: [],
+  header: [],
+  rows: [],
   index: {},
-  inventory: {},
   totals: {},
-  baseStats: {},
   lineas: [],
-  pendingByConcat: {},
   meta: null,
   history: [],
-  lastSearch: null,
-  stockVisible: false,
   serverMode: location.protocol === "http:" || location.protocol === "https:",
-  stockFilter: { text: "", linea: "", base: "", negativeBase: "", onlyStock: false },
-  virtualScrollTop: 0
+  serverVersion: null,
+  cols: { concat: -1, sku: -1, nombre: -1, linea: -1, bases: [] },
+  rowInfo: [],
+  searchList: [],
+  bySku: new Map(),
+  baseStats: {},
+  view: [],
+  sort: { col: -1, dir: 1 },
+  filter: { text: "", linea: "", base: "", mode: "", negBase: "" },
+  lastStart: -1,
+  current: null,
+  suggestions: [],
+  activeSuggestion: -1,
+  comparison: null,
+  compareLimit: COMPARE_PAGE,
+  compareFilter: { text: "", base: "", type: "" },
+  pendingQuery: new URLSearchParams(location.search).get("q")
 };
 
-const fileInput = document.getElementById("fileInput");
-const searchInput = document.getElementById("searchInput");
-const searchBtn = document.getElementById("searchBtn");
-const stockBtn = document.getElementById("stockBtn");
-const scanBtn = document.getElementById("scanBtn");
-const themeBtn = document.getElementById("themeBtn");
-const exportCopyBtn = document.getElementById("exportCopyBtn");
-const exportCsvBtn = document.getElementById("exportCsvBtn");
-const compareBtn = document.getElementById("compareBtn");
-const statusBox = document.getElementById("status");
-const fileName = document.getElementById("fileName");
-const updatedAt = document.getElementById("updatedAt");
-const serverInfo = document.getElementById("serverInfo");
-const rowCount = document.getElementById("rowCount");
-const resultBox = document.getElementById("resultBox");
-const queryLabel = document.getElementById("queryLabel");
-const totalsBox = document.getElementById("totalsBox");
-const qualityBox = document.getElementById("qualityBox");
-const stockSection = document.getElementById("stockSection");
-const stockTable = document.getElementById("stockTable");
-const stockInfo = document.getElementById("stockInfo");
-const stockFilterText = document.getElementById("stockFilterText");
-const stockFilterLinea = document.getElementById("stockFilterLinea");
-const stockFilterBase = document.getElementById("stockFilterBase");
-const stockFilterOnly = document.getElementById("stockFilterOnly");
-const historyBox = document.getElementById("historyBox");
-const compareBox = document.getElementById("compareBox");
-const scannerModal = document.getElementById("scannerModal");
-const scannerVideo = document.getElementById("scannerVideo");
-const scannerClose = document.getElementById("scannerClose");
+const $ = (id) => document.getElementById(id);
+const el = {
+  fileInput: $("fileInput"), uploadBtn: $("uploadBtn"), searchInput: $("searchInput"), suggest: $("suggest"),
+  scanBtn: $("scanBtn"), themeBtn: $("themeBtn"), exportCopyBtn: $("exportCopyBtn"), exportCsvBtn: $("exportCsvBtn"),
+  shareBtn: $("shareBtn"), compareBtn: $("compareBtn"), exportCompareBtn: $("exportCompareBtn"), status: $("status"),
+  progress: $("progress"), clock: $("clock"), fileName: $("fileName"), updatedAt: $("updatedAt"), serverInfo: $("serverInfo"),
+  serverLed: $("serverLed"), dataLed: $("dataLed"), downloadCurrent: $("downloadCurrent"), recent: $("recent"),
+  kpiProducts: $("kpiProducts"), kpiUnits: $("kpiUnits"), kpiPending: $("kpiPending"), kpiBases: $("kpiBases"),
+  kpiBasesSub: $("kpiBasesSub"), kpiNeg: $("kpiNeg"), kpiNegBtn: $("kpiNegBtn"),
+  resultBox: $("resultBox"), queryLabel: $("queryLabel"), totalsBox: $("totalsBox"), qualityBox: $("qualityBox"),
+  stockSection: $("stockSection"), stockTable: $("stockTable"), stockInfo: $("stockInfo"), stockFoot: $("stockFoot"),
+  stockFilterText: $("stockFilterText"), stockFilterLinea: $("stockFilterLinea"), stockFilterBase: $("stockFilterBase"),
+  stockFilterMode: $("stockFilterMode"), activeFilter: $("activeFilter"), clearFiltersBtn: $("clearFiltersBtn"),
+  exportStockBtn: $("exportStockBtn"), historyBox: $("historyBox"), historyInfo: $("historyInfo"),
+  compareBox: $("compareBox"), compareLabel: $("compareLabel"), scannerModal: $("scannerModal"),
+  scannerVideo: $("scannerVideo"), scannerClose: $("scannerClose"), dropOverlay: $("dropOverlay")
+};
 
 let xlsxWorker = null;
 let scannerStream = null;
 let scannerLoop = null;
-let searchDebounce = null;
+let suggestTimer = null;
+let filterTimer = null;
+let scrollRaf = 0;
 
-function getWorker() {
-  if (!xlsxWorker) xlsxWorker = new Worker("/xlsx-worker.js");
-  return xlsxWorker;
-}
-
-function setStatus(text) {
-  statusBox.textContent = text;
-}
-
+/* =========================================================
+   Utilidades
+   ========================================================= */
 function normalize(value) {
-  return String(value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
+  return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
 }
 
 function asNumber(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  const cleaned = String(value ?? "").replace(",", ".").replace(/[^\d.-]/g, "");
-  const parsed = Number(cleaned);
+  const parsed = Number(String(value ?? "").replace(",", ".").replace(/[^\d.-]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[char]));
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+const numberFmt = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 });
+const fmt = (n) => numberFmt.format(n || 0);
+const signed = (n) => (n > 0 ? "+" : "") + fmt(n);
+
+function formatDate(ts) {
+  if (!ts) return "Sin fecha";
+  return new Intl.DateTimeFormat("es-AR", { dateStyle: "short", timeStyle: "short" }).format(new Date(ts * 1000));
+}
+
+function timeAgo(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "hace instantes";
+  if (s < 3600) return `hace ${Math.round(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  const d = Math.round(s / 86400);
+  return `hace ${d} día${d === 1 ? "" : "s"}`;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function findHeaderIndex(header, name) {
@@ -110,69 +122,74 @@ function findHeaderIndex(header, name) {
   return header.findIndex((cell) => normalize(cell) === wanted);
 }
 
-function formatQty(value) {
-  return new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(value);
+function icon(name, extra = "") {
+  return `<svg class="i" ${extra}><use href="#i-${name}"/></svg>`;
 }
 
-function formatDate(timestamp) {
-  if (!timestamp) return "Sin fecha";
-  return new Intl.DateTimeFormat("es-AR", {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(new Date(timestamp * 1000));
+function setStatus(text, kind = "") {
+  el.status.textContent = text;
+  el.status.className = kind;
+  el.status.title = text;
 }
 
-function applyPayload(payload, displayName, meta = null) {
-  state.stockHeader = payload.header || [];
-  state.stockRows = payload.rows || [];
-  state.index = payload.index || {};
-  state.inventory = payload.inventory || {};
-  state.totals = payload.totals || {};
-  state.baseStats = calculateBaseStats();
-  state.lineas = payload.lineas || [];
-  state.pendingByConcat = payload.pendingByConcat || {};
-  state.meta = meta;
-
-  fileName.textContent = displayName;
-  updatedAt.textContent = meta?.uploadedAt
-    ? `Actualizada: ${formatDate(meta.uploadedAt)}`
-    : "Cargada en este navegador";
-  rowCount.textContent = `${payload.productCount ?? state.stockRows.length} productos`;
-
-  searchBtn.disabled = false;
-  stockBtn.disabled = false;
-  compareBtn.disabled = !state.serverMode;
-  exportCopyBtn.disabled = false;
-  exportCsvBtn.disabled = false;
-
-  populateLineaFilter();
-  populateBaseFilter();
-  renderTotals();
-  renderQuality();
-  renderHistory();
-  stockTable.innerHTML = "";
-  state.stockVisible = false;
-  stockSection.classList.add("hidden");
-  stockBtn.textContent = "Stock completo";
-  compareBox.innerHTML = "";
-  resultBox.innerHTML = '<div class="empty">Escribí un código como 25551 NLSA M y tocá Buscar.</div>';
+function setProgress(value) {
+  // value: null = ocultar, "busy" = indeterminado, número 0-100
+  if (value === null) { el.progress.classList.add("hidden"); return; }
+  el.progress.classList.remove("hidden");
+  el.progress.classList.toggle("indeterminate", value === "busy");
+  el.progress.firstElementChild.style.width = value === "busy" ? "" : `${value}%`;
 }
 
-function populateLineaFilter() {
-  const current = stockFilterLinea.value;
-  stockFilterLinea.innerHTML = '<option value="">Todas las líneas</option>' +
-    state.lineas.map((linea) => `<option value="${escapeHtml(linea)}">${escapeHtml(linea)}</option>`).join("");
-  stockFilterLinea.value = current;
+function countUp(node, target) {
+  const start = performance.now();
+  const from = 0;
+  const duration = 650;
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    node.textContent = fmt(Math.round(from + (target - from) * eased));
+    if (t < 1) requestAnimationFrame(step);
+    else node.textContent = fmt(target);
+  };
+  requestAnimationFrame(step);
 }
 
-function populateBaseFilter() {
-  const current = state.stockFilter.base;
-  stockFilterBase.innerHTML = '<option value="">Todas las bases</option>' +
-    BASE_COLUMNS.map((base) => `<option value="${escapeHtml(base.base)}">${escapeHtml(base.base)}</option>`).join("");
-  stockFilterBase.value = current;
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";")).join("\r\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function parseWithWorker(buffer) {
+function emptyBox(text, iconName = "box") {
+  return `<div class="empty">${icon(iconName)}<div>${text}</div></div>`;
+}
+
+function productTotal(bases) {
+  let total = 0;
+  for (const [base, qty] of Object.entries(bases || {})) {
+    if (base !== PENDING_BASE && qty > 0) total += qty;
+  }
+  return total;
+}
+
+function getToken() { return localStorage.getItem("stock-upload-token") || ""; }
+
+/* =========================================================
+   Carga de datos
+   ========================================================= */
+function getWorker() {
+  if (!xlsxWorker) xlsxWorker = new Worker("/xlsx-worker.js");
+  return xlsxWorker;
+}
+
+function parseWithWorker(buffer) {
   return new Promise((resolve, reject) => {
     const worker = getWorker();
     const handler = (event) => {
@@ -185,591 +202,937 @@ async function parseWithWorker(buffer) {
   });
 }
 
-async function loadWorkbook() {
-  const file = fileInput.files && fileInput.files[0];
+async function loadWorkbookLocally(file, note = "") {
+  setStatus("Leyendo la planilla en este navegador…");
+  setProgress("busy");
+  const payload = await parseWithWorker(await file.arrayBuffer());
+  applyPayload(payload, file.name, null);
+  setProgress(null);
+  setStatus(`Planilla cargada en este navegador.${note ? " " + note : ""}`, "ok");
+}
+
+async function handleFile(file) {
   if (!file) return;
-
-  searchBtn.disabled = true;
-  stockBtn.disabled = true;
-  resultBox.innerHTML = '<div class="empty">Leyendo la planilla...</div>';
-
+  if (!/\.xlsx$/i.test(file.name)) {
+    setStatus("El archivo tiene que ser una planilla .xlsx", "err");
+    return;
+  }
   try {
-    if (state.serverMode && location.protocol !== "file:") {
-      await uploadAndLoadFromServer(file);
-      return;
-    }
-
-    setStatus("Leyendo archivo Excel en segundo plano...");
-    const buffer = await file.arrayBuffer();
-    const payload = await parseWithWorker(buffer);
-    applyPayload(payload, file.name);
-    setStatus("Planilla cargada en el navegador.");
+    if (state.serverMode && state.serverVersion) await uploadToServer(file);
+    else await loadWorkbookLocally(file);
   } catch (error) {
     console.error(error);
-    setStatus(`No pude leer la planilla: ${error.message}`);
-    resultBox.innerHTML = '<div class="empty">Revisá que el archivo sea .xlsx y que tenga la pestaña STOCK.</div>';
+    setProgress(null);
+    setStatus(`No pude leer la planilla: ${error.message}`, "err");
+  } finally {
+    el.fileInput.value = "";
   }
 }
 
-async function loadWorkbookLocally(file, note = "") {
-  setStatus("Leyendo planilla en el navegador (puede tardar con archivos grandes)...");
-  const buffer = await file.arrayBuffer();
-  const payload = await parseWithWorker(buffer);
-  applyPayload(payload, file.name);
-  const suffix = note ? ` ${note}` : "";
-  setStatus(`Planilla cargada en este navegador.${suffix}`);
+function xhrUpload(file, token) {
+  return new Promise((resolve, reject) => {
+    const data = new FormData();
+    data.append("stock", file, file.name);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload");
+    xhr.timeout = 300000;
+    if (token) xhr.setRequestHeader("X-Upload-Token", token);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.round((event.loaded / event.total) * 100);
+      setProgress(pct);
+      setStatus(pct < 100 ? `Subiendo ${file.name} · ${pct}%` : "Procesando la planilla en el servidor…");
+      if (pct >= 100) setProgress("busy");
+    };
+    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
+    xhr.onerror = () => reject(new Error("Sin conexión con el servidor"));
+    xhr.ontimeout = () => reject(new Error("El servidor tardó demasiado"));
+    xhr.send(data);
+  });
 }
 
-async function uploadAndLoadFromServer(file) {
-  const data = new FormData();
-  data.append("stock", file, file.name);
-
-  setStatus(`Subiendo ${file.name} al servidor (puede tardar 1-2 min, no cierres la página)...`);
-
+async function uploadToServer(file) {
+  setStatus(`Subiendo ${file.name}…`);
+  setProgress(0);
+  let response;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180000);
-    const upload = await fetch("/api/upload", {
-      method: "POST",
-      body: data,
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    const uploadText = await upload.text();
-
-    if (!upload.ok) {
-      if (upload.status === 404) {
-        await loadWorkbookLocally(file, "El servidor no tiene /api/upload. Redeploy con el Dockerfile nuevo.");
-        return;
-      }
-      throw new Error(uploadText || `Error ${upload.status}`);
+    response = await xhrUpload(file, getToken());
+    if (response.status === 401) {
+      const token = window.prompt("Esta instalación pide un código para cargar planillas. Ingresalo:");
+      if (!token) { setProgress(null); setStatus("Carga cancelada: falta el código.", "err"); return; }
+      localStorage.setItem("stock-upload-token", token.trim());
+      setProgress(0);
+      response = await xhrUpload(file, token.trim());
+      if (response.status === 401) localStorage.removeItem("stock-upload-token");
     }
-
-    const meta = JSON.parse(uploadText);
-    setStatus("Procesando planilla en el servidor...");
-    const response = await fetch(`/api/stock-data?t=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) {
-      await loadWorkbookLocally(file, "No hay datos procesados en el servidor.");
-      return;
-    }
-
-    applyPayload(await response.json(), meta.name, meta);
-    await loadHistory();
-    setStatus(`Planilla cargada: ${meta.name} (${meta.productCount} productos).`);
   } catch (error) {
-    resultBox.innerHTML = `<div class="empty">Error del servidor: ${escapeHtml(error.message)}</div>`;
-    try {
-      await loadWorkbookLocally(file, "Se usó lectura local porque el servidor falló.");
-    } catch (localError) {
-      throw new Error(`${error.message} | Local: ${localError.message}`);
-    }
+    await loadWorkbookLocally(file, `(El servidor falló: ${error.message})`);
+    return;
   }
+
+  if (response.status === 404) {
+    await loadWorkbookLocally(file, "El servidor no tiene /api/upload: redeploy con el Dockerfile nuevo.");
+    return;
+  }
+  if (response.status < 200 || response.status >= 300) {
+    setProgress(null);
+    setStatus(response.text || `Error ${response.status}`, "err");
+    return;
+  }
+
+  const meta = JSON.parse(response.text);
+  setStatus("Descargando datos procesados…");
+  const payload = await fetchStockData();
+  applyPayload(payload, meta.name, meta);
+  await loadHistory();
+  setProgress(null);
+  const secs = meta.processSeconds ? ` en ${String(meta.processSeconds).replace(".", ",")} s` : "";
+  setStatus(`Planilla cargada: ${meta.name} · ${fmt(meta.productCount)} productos${secs}.`, "ok");
+}
+
+async function fetchStockData() {
+  const response = await fetch("/api/stock-data", { cache: "no-cache" });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
 }
 
 async function checkServerVersion() {
   try {
     const response = await fetch("/api/version", { cache: "no-store" });
     if (!response.ok) {
-      if (serverInfo) {
-        serverInfo.textContent = "Servidor VIEJO: falta /api/version. En Portainer hacé rebuild con el Dockerfile Python.";
-        serverInfo.style.color = "#b42318";
-      }
-      setStatus("Servidor antiguo detectado. La subida de planillas no va a funcionar hasta redeploy.");
+      el.serverInfo.textContent = "versión antigua";
+      el.serverLed.className = "led warn";
+      el.serverLed.title = "Servidor viejo: hacé rebuild en Portainer";
       return null;
     }
     const version = await response.json();
-    if (serverInfo) {
-      serverInfo.textContent = `Servidor v${version.version} OK`;
-      serverInfo.style.color = "";
-    }
+    el.serverInfo.textContent = `v${version.version}`;
+    el.serverLed.className = "led ok";
+    el.serverLed.title = `Servidor v${version.version} en línea`;
     return version;
   } catch {
-    if (serverInfo) {
-      serverInfo.textContent = "No hay servidor Python (¿abrís el HTML directo o Nginx viejo?)";
-      serverInfo.style.color = "#b42318";
-    }
+    el.serverInfo.textContent = "sin conexión";
+    el.serverLed.className = "led err";
+    el.serverLed.title = "Sin servidor: la planilla se lee en este navegador";
     return null;
   }
 }
 
-async function loadServerWorkbook() {
-  if (!state.serverMode || location.protocol === "file:") return false;
-
-  const version = await checkServerVersion();
-
+async function init() {
+  if (!state.serverMode) {
+    setStatus("Modo local: elegí una planilla para empezar.");
+    el.serverInfo.textContent = "modo local";
+    renderAllEmpty();
+    return;
+  }
+  setProgress("busy");
+  state.serverVersion = await checkServerVersion();
   try {
     const info = await fetch("/api/current", { cache: "no-store" });
     if (info.status === 404) {
-      setStatus(version
-        ? `Servidor v${version.version} listo. Subí la planilla para empezar.`
-        : "No hay planilla guardada. Subí una para empezar.");
-      return false;
+      renderAllEmpty();
+      setProgress(null);
+      setStatus(state.serverVersion ? "Servidor listo. Subí la planilla para empezar." : "Subí una planilla para empezar.");
+      return;
     }
     if (!info.ok) throw new Error(await info.text());
-
     const meta = await info.json();
-    setStatus(`Cargando datos procesados: ${meta.name}...`);
-    const response = await fetch(`/api/stock-data?t=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(await response.text());
-    const payload = await response.json();
-    applyPayload(payload, meta.name, meta);
+    setStatus(`Cargando ${meta.name}…`);
+    applyPayload(await fetchStockData(), meta.name, meta);
     await loadHistory();
-    setStatus(`Planilla del servidor cargada: ${meta.name}.`);
-    return true;
+    setStatus(`Listo · ${meta.name} · ${fmt(meta.productCount)} productos.`, "ok");
   } catch (error) {
-    setStatus(`No pude cargar la planilla del servidor: ${error.message}`);
-    return false;
+    renderAllEmpty();
+    setStatus(`No pude cargar la planilla del servidor: ${error.message}`, "err");
+  } finally {
+    setProgress(null);
   }
 }
 
+/* =========================================================
+   Preparación de datos
+   ========================================================= */
+function applyPayload(payload, displayName, meta) {
+  state.header = payload.header || [];
+  state.rows = payload.rows || [];
+  state.index = payload.index || {};
+  state.totals = payload.totals || {};
+  state.lineas = payload.lineas || [];
+  state.meta = meta;
+  state.comparison = null;
+
+  const h = state.header;
+  state.cols = {
+    concat: findHeaderIndex(h, "CONCAT"),
+    sku: findHeaderIndex(h, "SKU"),
+    color: findHeaderIndex(h, "COLOR"),
+    talle: findHeaderIndex(h, "TALLE"),
+    nombre: findHeaderIndex(h, "NOMBRE"),
+    linea: findHeaderIndex(h, "LINEA"),
+    bases: BASE_COLUMNS.map((b) => ({ base: b.base, idx: findHeaderIndex(h, b.col) })).filter((b) => b.idx >= 0)
+  };
+  state.baseColIdx = new Set(state.cols.bases.map((b) => b.idx));
+
+  buildDerived();
+
+  el.fileName.textContent = displayName;
+  el.fileName.title = displayName;
+  el.updatedAt.textContent = meta?.uploadedAt ? `${formatDate(meta.uploadedAt)} · ${timeAgo(meta.uploadedAt)}` : "en este navegador";
+  el.dataLed.className = "led ok";
+  el.downloadCurrent.classList.toggle("hidden", !meta);
+  el.searchInput.disabled = false;
+  el.compareBtn.disabled = !(state.serverMode && meta);
+  el.exportStockBtn.disabled = false;
+
+  populateFilters();
+  renderKpis();
+  renderTotals();
+  renderQuality();
+  renderHistory();
+  renderComparisonEmpty();
+  resetView();
+
+  if (state.pendingQuery) {
+    const q = state.pendingQuery;
+    state.pendingQuery = null;
+    el.searchInput.value = q;
+    runSearch(q);
+  } else if (state.current && state.index[state.current]) {
+    showProduct(state.current, { silent: true });
+  } else {
+    renderResultIdle();
+  }
+}
+
+function buildDerived() {
+  const { cols, rows, index } = state;
+  const rowInfo = new Array(rows.length);
+  const stats = {};
+  for (const b of cols.bases) stats[b.base] = { positive: 0, negativeCells: 0, negativeQty: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    let hasStock = false;
+    let hasNeg = false;
+    for (const b of cols.bases) {
+      const q = asNumber(row[b.idx]);
+      if (q > 0) { hasStock = true; stats[b.base].positive++; }
+      else if (q < 0) { hasNeg = true; stats[b.base].negativeCells++; stats[b.base].negativeQty += q; }
+    }
+    const concat = cols.concat >= 0 ? normalize(row[cols.concat]) : "";
+    const key = concat || normalize([row[cols.sku], row[cols.color], row[cols.talle]].filter((v) => v !== undefined && v !== "").join(" "));
+    rowInfo[i] = {
+      key,
+      hay: `${key} ${cols.sku >= 0 ? normalize(row[cols.sku]) : ""} ${cols.nombre >= 0 ? normalize(row[cols.nombre]) : ""}`,
+      linea: cols.linea >= 0 ? normalize(row[cols.linea]) : "",
+      hasStock,
+      hasNeg
+    };
+  }
+  state.rowInfo = rowInfo;
+  state.baseStats = stats;
+
+  const list = [];
+  const bySku = new Map();
+  for (const [key, product] of Object.entries(index)) {
+    const total = productTotal(product.bases);
+    list.push({ key, hay: `${key} ${normalize(product.nombre)}`, total, nombre: product.nombre });
+    const sku = normalize(product.sku);
+    if (sku) {
+      if (!bySku.has(sku)) bySku.set(sku, []);
+      bySku.get(sku).push({ key, total, color: product.color, talle: product.talle });
+    }
+  }
+  state.searchList = list;
+  state.bySku = bySku;
+}
+
+/* =========================================================
+   KPIs, totales y calidad
+   ========================================================= */
+function renderKpis() {
+  const totals = state.totals || {};
+  let units = 0;
+  for (const [base, qty] of Object.entries(totals)) if (base !== PENDING_BASE) units += qty;
+  const stats = Object.entries(state.baseStats);
+  const active = stats.filter(([base, s]) => base !== PENDING_BASE && s.positive > 0).length;
+  const totalBases = stats.filter(([base]) => base !== PENDING_BASE).length;
+  const neg = stats.reduce((sum, [, s]) => sum + s.negativeCells, 0);
+
+  countUp(el.kpiProducts, state.rows.length);
+  countUp(el.kpiUnits, units);
+  countUp(el.kpiPending, totals[PENDING_BASE] || 0);
+  countUp(el.kpiBases, active);
+  el.kpiBasesSub.textContent = `de ${totalBases} con stock positivo`;
+  countUp(el.kpiNeg, neg);
+  el.kpiNegBtn.classList.toggle("alert", neg > 0);
+}
+
+function renderTotals() {
+  const entries = Object.entries(state.totals || {});
+  if (!entries.length) { el.totalsBox.innerHTML = emptyBox("Sin datos todavía.", "layers"); return; }
+  const units = entries.filter(([b]) => b !== PENDING_BASE).reduce((s, [, q]) => s + Math.max(0, q), 0);
+  const max = Math.max(1, ...entries.map(([, q]) => Math.abs(q)));
+  entries.sort((a, b) => (a[0] === PENDING_BASE) - (b[0] === PENDING_BASE) || b[1] - a[1]);
+  el.totalsBox.innerHTML = entries.map(([base, qty], i) => {
+    const pend = base === PENDING_BASE;
+    const cls = qty < 0 ? "neg" : qty === 0 ? "zero" : pend ? "pend" : "";
+    const share = !pend && units > 0 && qty > 0 ? `<span class="b-share">${Math.round((qty / units) * 100)}%</span>` : "";
+    return `<button class="bar-row ${cls}" type="button" data-base="${escapeHtml(base)}" title="Ver productos con stock en ${escapeHtml(base)}">
+      <span class="b-name">${escapeHtml(base)}</span>
+      <span class="b-track"><span class="b-fill" style="width:${(Math.abs(qty) / max) * 100}%;animation-delay:${i * 40}ms"></span></span>
+      <span class="b-qty">${fmt(qty)}${share}</span>
+    </button>`;
+  }).join("");
+}
+
+function renderQuality() {
+  const stats = Object.entries(state.baseStats);
+  if (!state.rows.length) { el.qualityBox.innerHTML = emptyBox("Cargá una planilla para ver alertas y controles.", "alert"); return; }
+  const withStock = state.rowInfo.filter((r) => r.hasStock).length;
+  const noStock = state.rows.length - withStock;
+  const negRows = state.rowInfo.filter((r) => r.hasNeg).length;
+  const negBases = stats.filter(([, s]) => s.negativeCells > 0).sort((a, b) => b[1].negativeCells - a[1].negativeCells);
+
+  el.qualityBox.innerHTML = `
+    <div class="q-grid">
+      <button class="q-tile" type="button" data-mode="stock"><div class="l">Con stock</div><div class="v">${fmt(withStock)}</div></button>
+      <button class="q-tile" type="button" data-mode="nostock"><div class="l">Sin stock</div><div class="v">${fmt(noStock)}</div></button>
+      <button class="q-tile ${negRows ? "bad" : ""}" type="button" data-mode="negative"><div class="l">Productos con negativos</div><div class="v">${fmt(negRows)}</div></button>
+      <div class="q-tile"><div class="l">Cobertura</div><div class="v">${state.rows.length ? Math.round((withStock / state.rows.length) * 100) : 0}%</div></div>
+    </div>
+    ${negBases.length
+      ? `<div class="neg-list">${negBases.map(([base, s]) => `
+          <button class="neg-row" type="button" data-negative-base="${escapeHtml(base)}">
+            <span class="who"><span class="led"></span>${escapeHtml(base)}</span>
+            <span class="mono"><span class="down">${fmt(s.negativeCells)}</span> <span class="dim">reg · ${fmt(s.negativeQty)} u</span></span>
+          </button>`).join("")}</div>`
+      : `<div class="ok-line">${icon("check")}Sin stock negativo en ninguna base.</div>`}`;
+}
+
+/* =========================================================
+   Búsqueda
+   ========================================================= */
+function findMatches(rawQuery, limit = SUGGEST_LIMIT) {
+  const q = normalize(rawQuery);
+  if (!q) return { items: [], total: 0 };
+  const tokens = q.split(" ");
+  const scored = [];
+  for (const item of state.searchList) {
+    let score;
+    if (item.key === q) score = 0;
+    else if (item.key.startsWith(q)) score = 1;
+    else if (item.key.includes(q)) score = 2;
+    else if (tokens.every((t) => item.hay.includes(t))) score = 3;
+    else continue;
+    scored.push({ ...item, score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.key.localeCompare(b.key, "es", { numeric: true }));
+  return { items: scored.slice(0, limit), total: scored.length, query: q };
+}
+
+function highlight(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const i = text.indexOf(q);
+  if (i < 0) return safe;
+  return escapeHtml(text.slice(0, i)) + "<mark>" + escapeHtml(text.slice(i, i + q.length)) + "</mark>" + escapeHtml(text.slice(i + q.length));
+}
+
+function updateSuggestions() {
+  const value = el.searchInput.value;
+  if (normalize(value).length < 2) { hideSuggestions(); return; }
+  const { items, total, query } = findMatches(value);
+  state.suggestions = items;
+  state.activeSuggestion = items.length ? 0 : -1;
+  if (!items.length) {
+    el.suggest.innerHTML = `<div class="suggest-foot">Sin coincidencias para “${escapeHtml(value.trim())}”</div>`;
+  } else {
+    el.suggest.innerHTML = items.map((item, i) => `
+      <button class="suggest-item ${i === 0 ? "active" : ""}" type="button" role="option" data-key="${escapeHtml(item.key)}">
+        <span class="code">${highlight(item.key, query)}</span>
+        <span class="name">${escapeHtml(item.nombre || "")}</span>
+        <span class="qty ${item.total ? "" : "zero"}">${fmt(item.total)}</span>
+      </button>`).join("") +
+      `<div class="suggest-foot">${fmt(total)} coincidencia${total === 1 ? "" : "s"} · ↑↓ para moverte · Enter para abrir</div>`;
+  }
+  el.suggest.classList.remove("hidden");
+}
+
+function hideSuggestions() {
+  el.suggest.classList.add("hidden");
+  state.suggestions = [];
+  state.activeSuggestion = -1;
+}
+
+function moveSuggestion(delta) {
+  if (!state.suggestions.length) return;
+  state.activeSuggestion = (state.activeSuggestion + delta + state.suggestions.length) % state.suggestions.length;
+  el.suggest.querySelectorAll(".suggest-item").forEach((node, i) => node.classList.toggle("active", i === state.activeSuggestion));
+}
+
+function runSearch(rawQuery) {
+  hideSuggestions();
+  const query = String(rawQuery ?? "").trim();
+  if (!query) { renderResultIdle(); return; }
+  const { items } = findMatches(query, 1);
+  if (!items.length) {
+    state.current = null;
+    toggleResultActions(false);
+    el.queryLabel.textContent = query;
+    el.resultBox.innerHTML = emptyBox(`No encontré <b class="mono">${escapeHtml(query)}</b> en la planilla.<br><span class="dim">Probá con menos datos, por ejemplo sólo el SKU.</span>`, "search");
+    return;
+  }
+  showProduct(items[0].key);
+}
+
+function showProduct(key, { silent = false } = {}) {
+  const product = state.index[key];
+  if (!product) return;
+  hideSuggestions();
+  state.current = key;
+  el.searchInput.value = key;
+  el.queryLabel.textContent = "";
+  toggleResultActions(true);
+  if (!silent) {
+    addRecent(key);
+    const url = new URL(location.href);
+    url.searchParams.set("q", key);
+    history.replaceState(null, "", url);
+  }
+
+  const bases = Object.entries(product.bases || {});
+  const total = productTotal(product.bases);
+  const max = Math.max(1, ...bases.map(([, q]) => Math.abs(q)));
+  const withStock = bases.filter(([b, q]) => b !== PENDING_BASE && q > 0).length;
+  bases.sort((a, b) => (a[0] === PENDING_BASE) - (b[0] === PENDING_BASE) || b[1] - a[1]);
+
+  const variants = (state.bySku.get(normalize(product.sku)) || [])
+    .slice()
+    .sort((a, b) => a.key.localeCompare(b.key, "es", { numeric: true }));
+
+  el.resultBox.innerHTML = `
+    <div class="product-head">
+      <div>
+        <div class="product-code">${escapeHtml(key)}</div>
+        <div class="product-name">${escapeHtml(product.nombre || "Sin nombre")}</div>
+        <div class="product-tags">
+          ${product.sku !== "" ? `<span class="chip cyan">SKU ${escapeHtml(product.sku)}</span>` : ""}
+          ${product.color !== "" ? `<span class="chip violet">COLOR ${escapeHtml(product.color)}</span>` : ""}
+          ${product.talle !== "" ? `<span class="chip green">TALLE ${escapeHtml(product.talle)}</span>` : ""}
+          ${product.linea ? `<span class="chip">${escapeHtml(product.linea)}</span>` : ""}
+        </div>
+      </div>
+      <div class="product-total">
+        <div class="n ${total ? "" : "zero"}">${fmt(total)}</div>
+        <div class="l">unidades · ${withStock} base${withStock === 1 ? "" : "s"}</div>
+      </div>
+    </div>
+    <div class="bars">
+      ${bases.map(([base, qty], i) => {
+        const cls = qty < 0 ? "neg" : qty === 0 ? "zero" : base === PENDING_BASE ? "pend" : "";
+        return `<button class="bar-row ${cls}" type="button" data-base="${escapeHtml(base)}" title="Ver todo el stock de ${escapeHtml(base)}">
+          <span class="b-name">${escapeHtml(base)}</span>
+          <span class="b-track"><span class="b-fill" style="width:${(Math.abs(qty) / max) * 100}%;animation-delay:${i * 35}ms"></span></span>
+          <span class="b-qty">${fmt(qty)}</span>
+        </button>`;
+      }).join("")}
+    </div>
+    ${variants.length > 1 ? `
+      <div class="variants">
+        <h3>Otras variantes del SKU ${escapeHtml(product.sku)} · ${variants.length}</h3>
+        <div class="variant-grid">
+          ${variants.map((v) => `<button class="variant ${v.key === key ? "current" : ""} ${v.total ? "" : "none"}" type="button" data-key="${escapeHtml(v.key)}" title="${escapeHtml(v.key)}">${escapeHtml([v.color, v.talle].filter((x) => x !== "").join(" · ") || v.key)} <b>${fmt(v.total)}</b></button>`).join("")}
+        </div>
+      </div>` : ""}`;
+}
+
+function renderResultIdle() {
+  toggleResultActions(false);
+  el.queryLabel.textContent = "";
+  if (!state.rows.length) { renderWelcome(); return; }
+  el.resultBox.innerHTML = emptyBox(`Escribí un código como <b class="mono">25551 NLSA M</b>, un SKU o parte del nombre.<br><span class="dim">Atajo: tecla <kbd>/</kbd> para buscar desde cualquier lugar.</span>`, "search");
+}
+
+function renderWelcome() {
+  el.resultBox.innerHTML = `
+    <div class="welcome">
+      <div class="ring">${icon("upload")}</div>
+      <h2>Cargá la planilla de stock</h2>
+      <p>Arrastrá el archivo .xlsx a cualquier parte de la pantalla o usá el botón. Se procesa una sola vez y queda disponible para todos los equipos.</p>
+      <button class="btn primary" type="button" data-action="upload">${icon("upload")}Elegir planilla</button>
+    </div>`;
+}
+
+function toggleResultActions(on) {
+  el.exportCopyBtn.disabled = !on;
+  el.exportCsvBtn.disabled = !on;
+  el.shareBtn.disabled = !on || !state.serverMode;
+}
+
+function addRecent(key) {
+  const list = JSON.parse(localStorage.getItem("stock-recent") || "[]").filter((k) => k !== key);
+  list.unshift(key);
+  localStorage.setItem("stock-recent", JSON.stringify(list.slice(0, RECENT_MAX)));
+  renderRecent();
+}
+
+function renderRecent() {
+  const list = JSON.parse(localStorage.getItem("stock-recent") || "[]").filter((k) => state.index[k]);
+  el.recent.innerHTML = list.length
+    ? `<span class="label">Recientes</span>` + list.map((k) => `<button class="chip" type="button" data-key="${escapeHtml(k)}">${escapeHtml(k)}</button>`).join("")
+    : "";
+}
+
+/* =========================================================
+   Exportar consulta
+   ========================================================= */
+function currentProductLines() {
+  const product = state.index[state.current];
+  const lines = [
+    `Producto: ${state.current}`,
+    `SKU: ${product.sku}`,
+    `Color: ${product.color}`,
+    `Talle: ${product.talle}`,
+    `Nombre: ${product.nombre}`,
+    ""
+  ];
+  for (const [base, qty] of Object.entries(product.bases)) if (qty > 0) lines.push(`${base}: ${fmt(qty)}`);
+  lines.push("", `Total (sin pendientes): ${fmt(productTotal(product.bases))}`);
+  return lines;
+}
+
+async function copyText(text, okMessage) {
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus(okMessage, "ok");
+  } catch {
+    setStatus("No pude copiar al portapapeles (el navegador lo bloqueó).", "err");
+  }
+}
+
+function exportSearchCsv() {
+  const product = state.index[state.current];
+  if (!product) return;
+  const rows = [
+    ["campo", "valor"], ["consulta", state.current], ["sku", product.sku], ["color", product.color],
+    ["talle", product.talle], ["nombre", product.nombre], ["linea", product.linea], [], ["base", "cantidad"]
+  ];
+  for (const [base, qty] of Object.entries(product.bases)) if (qty > 0) rows.push([base, qty]);
+  downloadCsv(`stock-${state.current.replace(/\s+/g, "-")}.csv`, rows);
+  setStatus("CSV descargado.", "ok");
+}
+
+/* =========================================================
+   Tabla de stock completo (virtualizada)
+   ========================================================= */
+function populateFilters() {
+  el.stockFilterLinea.innerHTML = '<option value="">Todas las líneas</option>' +
+    state.lineas.map((l) => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("");
+  el.stockFilterLinea.value = state.lineas.includes(state.filter.linea) ? state.filter.linea : "";
+  el.stockFilterBase.innerHTML = '<option value="">Todas las bases</option>' +
+    state.cols.bases.map((b) => `<option value="${escapeHtml(b.base)}">Con stock en ${escapeHtml(b.base)}</option>`).join("");
+  el.stockFilterBase.value = state.filter.base;
+}
+
+function computeView() {
+  const { rows, rowInfo, cols, filter, sort } = state;
+  const text = normalize(filter.text);
+  const tokens = text ? text.split(" ") : [];
+  const linea = normalize(filter.linea);
+  const baseIdx = filter.base ? (cols.bases.find((b) => b.base === filter.base)?.idx ?? -1) : -1;
+  const negIdx = filter.negBase ? (cols.bases.find((b) => b.base === filter.negBase)?.idx ?? -1) : -1;
+
+  const view = [];
+  for (let i = 0; i < rows.length; i++) {
+    const info = rowInfo[i];
+    if (filter.mode === "stock" && !info.hasStock) continue;
+    if (filter.mode === "nostock" && info.hasStock) continue;
+    if (filter.mode === "negative" && !info.hasNeg) continue;
+    if (filter.base && (baseIdx < 0 || asNumber(rows[i][baseIdx]) <= 0)) continue;
+    if (filter.negBase && (negIdx < 0 || asNumber(rows[i][negIdx]) >= 0)) continue;
+    if (linea && info.linea !== linea) continue;
+    if (tokens.length && !tokens.every((t) => info.hay.includes(t))) continue;
+    view.push(i);
+  }
+
+  if (sort.col >= 0) {
+    const c = sort.col;
+    const numeric = state.baseColIdx.has(c) || view.slice(0, 50).every((i) => rows[i][c] === "" || typeof rows[i][c] === "number");
+    view.sort((a, b) => {
+      const va = rows[a][c], vb = rows[b][c];
+      const r = numeric ? asNumber(va) - asNumber(vb) : String(va ?? "").localeCompare(String(vb ?? ""), "es", { numeric: true });
+      return r * sort.dir;
+    });
+  }
+  state.view = view;
+}
+
+function resetView() {
+  computeView();
+  state.lastStart = -1;
+  el.stockTable.scrollTop = 0;
+  renderStockTable();
+  renderActiveFilter();
+}
+
+function renderActiveFilter() {
+  const chips = [];
+  if (state.filter.negBase) chips.push(`<span class="chip red">Negativos en ${escapeHtml(state.filter.negBase)} <button class="btn sm icon" style="height:20px;width:20px;border:0;background:none" data-clear="negBase" aria-label="Quitar">${icon("x", 'style="width:12px;height:12px"')}</button></span>`);
+  el.activeFilter.innerHTML = chips.length ? `<span class="dim" style="font-size:12px">${icon("filter", 'style="width:14px;height:14px;vertical-align:-3px"')} Filtro activo:</span>${chips.join("")}` : "";
+  el.activeFilter.classList.toggle("hidden", !chips.length);
+}
+
+function renderStockTable() {
+  const { header, view, sort } = state;
+  if (!header.length) {
+    el.stockTable.innerHTML = `<div style="padding:18px">${emptyBox("La tabla aparece cuando cargás una planilla.", "table")}</div>`;
+    el.stockInfo.textContent = "";
+    el.stockFoot.textContent = "";
+    return;
+  }
+  el.stockInfo.textContent = `${fmt(view.length)} de ${fmt(state.rows.length)} filas`;
+  el.stockFoot.textContent = `${fmt(view.length)} filas visibles`;
+  el.stockTable.innerHTML = `
+    <table>
+      <thead><tr>${header.map((cell, i) => `<th data-col="${i}" class="${sort.col === i ? "sorted" : ""}">${escapeHtml(cell)}${sort.col === i ? `<span class="arrow">${sort.dir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}</tr></thead>
+      <tbody></tbody>
+    </table>
+    ${view.length ? "" : `<div style="padding:18px">${emptyBox("Ningún producto coincide con los filtros.", "filter")}</div>`}`;
+  state.lastStart = -1;
+  renderVisibleRows();
+}
+
+function renderVisibleRows() {
+  const tbody = el.stockTable.querySelector("tbody");
+  if (!tbody) return;
+  const { view, rows, header } = state;
+  const viewport = el.stockTable.clientHeight || 520;
+  const scrollTop = Math.max(0, el.stockTable.scrollTop - 38);
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  if (start === state.lastStart) return;
+  state.lastStart = start;
+  const end = Math.min(view.length, start + Math.ceil(viewport / ROW_H) + OVERSCAN * 2);
+  const cols = header.length;
+  const baseCols = state.baseColIdx;
+
+  let html = `<tr class="spacer"><td colspan="${cols}" style="height:${start * ROW_H}px"></td></tr>`;
+  for (let v = start; v < end; v++) {
+    const i = view[v];
+    const row = rows[i];
+    html += `<tr class="data" data-row="${i}">`;
+    for (let c = 0; c < cols; c++) {
+      const value = row[c] ?? "";
+      let cls = "";
+      if (baseCols.has(c)) {
+        const q = asNumber(value);
+        cls = `num ${q > 0 ? "pos" : q < 0 ? "neg" : "z"}`;
+      } else if (typeof value === "number") cls = "num";
+      html += `<td class="${cls}">${escapeHtml(baseCols.has(c) && typeof value === "number" ? fmt(value) : value)}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += `<tr class="spacer"><td colspan="${cols}" style="height:${Math.max(0, (view.length - end) * ROW_H)}px"></td></tr>`;
+  tbody.innerHTML = html;
+}
+
+function applyFilter(patch, scroll = false) {
+  Object.assign(state.filter, patch);
+  el.stockFilterText.value = state.filter.text;
+  el.stockFilterLinea.value = state.filter.linea;
+  el.stockFilterBase.value = state.filter.base;
+  el.stockFilterMode.value = state.filter.mode;
+  resetView();
+  if (scroll) el.stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function exportStockView() {
+  const rows = [state.header, ...state.view.map((i) => state.rows[i])];
+  const stamp = new Date().toISOString().slice(0, 10);
+  downloadCsv(`stock-vista-${stamp}.csv`, rows);
+  setStatus(`Exportadas ${fmt(state.view.length)} filas.`, "ok");
+}
+
+/* =========================================================
+   Historial
+   ========================================================= */
 async function loadHistory() {
   if (!state.serverMode) return;
   try {
     const response = await fetch("/api/history", { cache: "no-store" });
     if (!response.ok) return;
     state.history = await response.json();
-    renderHistory();
   } catch {
     state.history = [];
   }
+  renderHistory();
 }
 
 function renderHistory() {
-  if (!state.serverMode) {
-    historyBox.innerHTML = '<div class="empty">El historial está disponible cuando corrés la app en el servidor.</div>';
-    return;
-  }
-
-  if (!state.history.length) {
-    historyBox.innerHTML = '<div class="empty">Todavía no hay historial de planillas.</div>';
-    return;
-  }
-
-  historyBox.innerHTML = state.history.map((entry, index) => `
-    <div class="history-item">
-      <div>
-        <strong>${escapeHtml(entry.name)}</strong>
-        <div class="muted">${formatDate(entry.uploadedAt)} · ${entry.productCount} productos</div>
+  if (!state.serverMode) { el.historyBox.innerHTML = emptyBox("El historial está disponible cuando la app corre en el servidor.", "history"); return; }
+  if (!state.history.length) { el.historyBox.innerHTML = emptyBox("Todavía no hay planillas guardadas.", "history"); el.historyInfo.textContent = ""; return; }
+  const currentId = state.meta?.id ?? state.history[0]?.id;
+  const selected = state.comparison?.previous?.id;
+  el.historyInfo.textContent = `${state.history.length} carga${state.history.length === 1 ? "" : "s"}`;
+  const deleteEnabled = (state.serverVersion?.features || []).includes("delete");
+  const downloadEnabled = (state.serverVersion?.features || []).includes("download");
+  el.historyBox.innerHTML = `<div class="timeline">${state.history.map((entry) => {
+    const isCurrent = entry.id === currentId;
+    return `<div class="t-item ${isCurrent ? "current" : ""} ${entry.id === selected ? "selected" : ""}">
+      <span class="t-dot"></span>
+      <div style="min-width:0">
+        <div class="t-name" title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</div>
+        <div class="t-meta">${formatDate(entry.uploadedAt)} · ${fmt(entry.productCount)} productos${entry.size ? " · " + formatBytes(entry.size) : ""}</div>
       </div>
-      ${index === 0 ? '<span class="pill">Actual</span>' : `<button class="link-btn" data-compare-id="${escapeHtml(entry.id)}">Comparar</button>`}
-    </div>
-  `).join("");
+      <div class="t-actions">
+        ${isCurrent ? '<span class="chip cyan">ACTUAL</span>' : `<button class="btn sm" type="button" data-compare-id="${escapeHtml(entry.id)}" title="Comparar con la actual">${icon("compare")}Comparar</button>`}
+        ${downloadEnabled ? `<a class="btn sm icon" href="/api/history/download?id=${encodeURIComponent(entry.id)}" title="Descargar esta planilla">${icon("download")}</a>` : ""}
+        ${!isCurrent && deleteEnabled ? `<button class="btn sm icon danger" type="button" data-delete-id="${escapeHtml(entry.id)}" title="Eliminar del historial">${icon("trash")}</button>` : ""}
+      </div>
+    </div>`;
+  }).join("")}</div>`;
+}
 
-  historyBox.querySelectorAll("[data-compare-id]").forEach((button) => {
-    button.addEventListener("click", () => compareWithHistory(button.dataset.compareId));
+async function deleteHistory(id) {
+  const entry = state.history.find((e) => e.id === id);
+  if (!entry || !window.confirm(`¿Eliminar "${entry.name}" (${formatDate(entry.uploadedAt)}) del historial?`)) return;
+  let response = await fetch(`/api/history?id=${encodeURIComponent(id)}`, { method: "DELETE", headers: { "X-Upload-Token": getToken() } });
+  if (response.status === 401) {
+    const token = window.prompt("Ingresá el código de carga para eliminar:");
+    if (!token) return;
+    localStorage.setItem("stock-upload-token", token.trim());
+    response = await fetch(`/api/history?id=${encodeURIComponent(id)}`, { method: "DELETE", headers: { "X-Upload-Token": token.trim() } });
+  }
+  if (!response.ok) { setStatus(`No pude eliminar: ${await response.text()}`, "err"); return; }
+  if (state.comparison?.previous?.id === id) { state.comparison = null; renderComparisonEmpty(); }
+  await loadHistory();
+  setStatus(`Eliminada del historial: ${entry.name}`, "ok");
+}
+
+/* =========================================================
+   Comparación
+   ========================================================= */
+function renderComparisonEmpty() {
+  el.exportCompareBtn.disabled = true;
+  el.compareLabel.textContent = "";
+  el.compareBox.innerHTML = emptyBox(
+    state.serverMode
+      ? "Compará la planilla actual con la anterior o elegí una del historial para ver qué cambió."
+      : "La comparación está disponible cuando la app corre en el servidor.",
+    "compare"
+  );
+}
+
+async function compare(historyId = "") {
+  try {
+    setStatus("Comparando planillas…");
+    setProgress("busy");
+    const url = historyId ? `/api/compare?id=${encodeURIComponent(historyId)}` : "/api/compare";
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error(await response.text());
+    state.comparison = await response.json();
+    state.compareLimit = COMPARE_PAGE;
+    state.compareFilter = { text: "", base: "", type: "" };
+    renderComparison();
+    renderHistory();
+    $("comparePanel").scrollIntoView({ behavior: "smooth", block: "start" });
+    setStatus(`Comparación lista contra ${state.comparison.previous.name}.`, "ok");
+  } catch (error) {
+    setStatus(`No pude comparar: ${error.message}`, "err");
+  } finally {
+    setProgress(null);
+  }
+}
+
+function filteredChanges() {
+  const { text, base, type } = state.compareFilter;
+  const tokens = normalize(text).split(" ").filter(Boolean);
+  return (state.comparison?.changes || []).filter((c) => {
+    if (base && c.base !== base) return false;
+    if (type === "up" && !(c.delta > 0)) return false;
+    if (type === "down" && !(c.delta < 0)) return false;
+    if ((type === "new" || type === "removed") && c.type !== type) return false;
+    if (tokens.length) {
+      const hay = `${c.concat} ${normalize(c.nombre)}`;
+      if (!tokens.every((t) => hay.includes(t))) return false;
+    }
+    return true;
   });
 }
 
-async function compareWithHistory(historyId) {
-  try {
-    setStatus("Comparando planillas...");
-    const response = await fetch(`/api/compare?id=${encodeURIComponent(historyId)}`, { cache: "no-store" });
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    renderComparison(data);
-    setStatus(`Comparación lista contra ${data.previous.name}.`);
-  } catch (error) {
-    setStatus(`No pude comparar: ${error.message}`);
-  }
-}
-
-async function compareWithPrevious() {
-  try {
-    setStatus("Comparando con la planilla anterior...");
-    const response = await fetch("/api/compare", { cache: "no-store" });
-    if (!response.ok) throw new Error(await response.text());
-    const data = await response.json();
-    renderComparison(data);
-    setStatus(`Comparación lista contra ${data.previous.name}.`);
-  } catch (error) {
-    setStatus(`No pude comparar: ${error.message}`);
-  }
-}
-
-function renderComparison(data) {
+function renderComparison() {
+  const data = state.comparison;
+  if (!data) { renderComparisonEmpty(); return; }
   const changes = data.changes || [];
+  const s = data.summary || {};
+  el.compareLabel.textContent = `vs ${data.previous.name} · ${formatDate(data.previous.uploadedAt)}`;
+  el.exportCompareBtn.disabled = !changes.length;
+
   if (!changes.length) {
-    compareBox.innerHTML = '<div class="empty">No hay diferencias de stock entre las dos planillas.</div>';
+    el.compareBox.innerHTML = `<div class="ok-line" style="margin-top:0">${icon("check")}No hay diferencias de stock entre las dos planillas.</div>`;
     return;
   }
 
-  const limited = changes.slice(0, 300);
-  compareBox.innerHTML = `
-    <div class="compare-summary">
-      <span class="pill">${data.summary.changedLines} cambios</span>
-      <span class="pill up">+${data.summary.positive}</span>
-      <span class="pill down">-${data.summary.negative}</span>
-      <span class="file-name">Actual: ${escapeHtml(data.current.name)} vs ${escapeHtml(data.previous.name)}</span>
+  const unitsIn = s.unitsIn ?? changes.filter((c) => c.delta > 0).reduce((a, c) => a + c.delta, 0);
+  const unitsOut = s.unitsOut ?? changes.filter((c) => c.delta < 0).reduce((a, c) => a + c.delta, 0);
+  const changedProducts = s.changedProducts ?? new Set(changes.map((c) => c.concat)).size;
+  let byBase = s.byBase;
+  if (!byBase) {
+    byBase = {};
+    for (const c of changes) {
+      const e = (byBase[c.base] ||= { in: 0, out: 0, net: 0, lines: 0 });
+      e.lines++; e.net += c.delta;
+      if (c.delta > 0) e.in += c.delta; else e.out += c.delta;
+    }
+  }
+  const baseEntries = Object.entries(byBase).sort((a, b) => Math.abs(b[1].net) - Math.abs(a[1].net));
+  const maxAbs = Math.max(1, ...baseEntries.map(([, e]) => Math.max(e.in, Math.abs(e.out))));
+  const bases = baseEntries.map(([b]) => b).sort();
+
+  el.compareBox.innerHTML = `
+    <div class="cmp-kpis">
+      <div class="q-tile"><div class="l">Productos con cambios</div><div class="v">${fmt(changedProducts)}</div></div>
+      <div class="q-tile"><div class="l">Nuevos / eliminados</div><div class="v" style="white-space:nowrap"><span class="up">${fmt(s.newProducts ?? 0)}</span> <span class="dim">/</span> <span class="down">${fmt(s.removedProducts ?? 0)}</span></div></div>
+      <div class="q-tile"><div class="l">Unidades que suben</div><div class="v up">${signed(unitsIn)}</div></div>
+      <div class="q-tile"><div class="l">Unidades que bajan</div><div class="v down">${fmt(unitsOut)}</div></div>
     </div>
-    <div class="table-wrap compare-table">
+    <div class="diverge">
+      ${baseEntries.map(([base, e]) => `
+        <div class="dv-row" title="${escapeHtml(base)}: +${fmt(e.in)} / ${fmt(e.out)} · ${fmt(e.lines)} cambios">
+          <span class="n">${escapeHtml(base)}</span>
+          <span class="l"><span style="width:${(Math.abs(e.out) / maxAbs) * 100}%"></span></span>
+          <span class="r"><span style="width:${(e.in / maxAbs) * 100}%"></span></span>
+          <span class="v ${e.net > 0 ? "up" : e.net < 0 ? "down" : "dim"}">${signed(e.net)}</span>
+        </div>`).join("")}
+    </div>
+    <div class="cmp-filters">
+      <input id="cmpText" class="field mono" type="text" placeholder="Filtrar producto…" value="${escapeHtml(state.compareFilter.text)}" autocomplete="off">
+      <select id="cmpBase" class="field"><option value="">Todas las bases</option>${bases.map((b) => `<option ${state.compareFilter.base === b ? "selected" : ""}>${escapeHtml(b)}</option>`).join("")}</select>
+      <select id="cmpType" class="field">
+        ${[["", "Todos los cambios"], ["up", "Sólo subas"], ["down", "Sólo bajas"], ["new", "Productos nuevos"], ["removed", "Productos eliminados"]]
+          .map(([v, l]) => `<option value="${v}" ${state.compareFilter.type === v ? "selected" : ""}>${l}</option>`).join("")}
+      </select>
+    </div>
+    <div id="cmpTable"></div>`;
+  renderComparisonTable();
+}
+
+function renderComparisonTable() {
+  const box = $("cmpTable");
+  if (!box) return;
+  const list = filteredChanges();
+  const limited = list.slice(0, state.compareLimit);
+  const tag = { new: "nuevo", removed: "eliminado", changed: "cambio" };
+  box.innerHTML = list.length ? `
+    <div class="table-wrap" style="max-height:420px;border:1px solid var(--line);border-radius:12px">
       <table>
-        <thead>
-          <tr>
-            <th>Producto</th>
-            <th>Base</th>
-            <th>Antes</th>
-            <th>Ahora</th>
-            <th>Delta</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${limited.map((item) => `
-            <tr>
-              <td>${escapeHtml(item.concat)}</td>
-              <td>${escapeHtml(item.base)}</td>
-              <td class="num">${formatQty(item.before)}</td>
-              <td class="num">${formatQty(item.after)}</td>
-              <td class="num ${item.delta > 0 ? "up" : item.delta < 0 ? "down" : ""}">${formatQty(item.delta)}</td>
-            </tr>
-          `).join("")}
+        <thead><tr><th>Producto</th><th>Base</th><th>Tipo</th><th style="text-align:right">Antes</th><th style="text-align:right">Ahora</th><th style="text-align:right">Δ</th></tr></thead>
+        <tbody>${limited.map((c) => `
+          <tr class="data" data-key="${escapeHtml(c.concat)}" title="${escapeHtml(c.nombre || "")}">
+            <td>${escapeHtml(c.concat)}</td>
+            <td>${escapeHtml(c.base)}</td>
+            <td><span class="type-tag ${c.type}">${tag[c.type] || c.type}</span></td>
+            <td class="num">${fmt(c.before)}</td>
+            <td class="num">${fmt(c.after)}</td>
+            <td class="num ${c.delta > 0 ? "pos" : c.delta < 0 ? "neg" : ""}">${signed(c.delta)}</td>
+          </tr>`).join("")}
         </tbody>
       </table>
     </div>
-    ${changes.length > limited.length ? `<p class="file-name">Mostrando ${limited.length} de ${changes.length} cambios.</p>` : ""}
-  `;
+    <div class="table-foot" style="border:0;padding:10px 2px 0">
+      <span>Mostrando ${fmt(limited.length)} de ${fmt(list.length)} cambios</span>
+      ${list.length > limited.length ? '<button class="btn sm" type="button" id="cmpMore">Mostrar más</button>' : ""}
+    </div>` : emptyBox("Ningún cambio coincide con el filtro.", "filter");
 }
 
-function findSearchKey(query) {
-  if (state.index[query]) return query;
-  const partial = Object.keys(state.index).filter((key) => key.includes(query));
-  if (partial.length === 1) return partial[0];
-  if (partial.length > 1) {
-    const exactStart = partial.find((key) => key.startsWith(query));
-    return exactStart || partial[0];
-  }
-  return null;
+function exportComparison() {
+  const data = state.comparison;
+  if (!data) return;
+  const rows = [["producto", "nombre", "base", "tipo", "antes", "ahora", "delta"]];
+  for (const c of filteredChanges()) rows.push([c.concat, c.nombre, c.base, c.type, c.before, c.after, c.delta]);
+  downloadCsv(`comparacion-${data.previous.id}.csv`, rows);
+  setStatus(`Exportados ${fmt(rows.length - 1)} cambios.`, "ok");
 }
 
-function searchStock() {
-  const query = normalize(searchInput.value);
-  if (!query) {
-    resultBox.innerHTML = '<div class="empty">Ingresá SKU color y talle en el casillero de búsqueda.</div>';
-    return;
-  }
-
-  const key = findSearchKey(query);
-  queryLabel.textContent = searchInput.value.trim();
-
-  if (!key) {
-    state.lastSearch = null;
-    exportCopyBtn.disabled = true;
-    exportCsvBtn.disabled = true;
-    resultBox.innerHTML = '<div class="empty">No encontré ese SKU color talle en la planilla.</div>';
-    return;
-  }
-
-  const product = state.index[key];
-  const available = Object.entries(product.bases || {})
-    .filter(([, qty]) => qty > 0)
-    .map(([base, qty]) => ({ base, qty }));
-
-  state.lastSearch = { key, product, available, query: searchInput.value.trim() };
-  exportCopyBtn.disabled = false;
-  exportCsvBtn.disabled = false;
-
-  const productHtml = `
-    <div class="product">
-      <div class="kv"><span>SKU</span><strong>${escapeHtml(product.sku)}</strong></div>
-      <div class="kv"><span>Color</span><strong>${escapeHtml(product.color)}</strong></div>
-      <div class="kv"><span>Talle</span><strong>${escapeHtml(product.talle)}</strong></div>
-      <div class="kv"><span>Nombre</span><strong>${escapeHtml(product.nombre)}</strong></div>
-      <div class="kv"><span>Línea</span><strong>${escapeHtml(product.linea)}</strong></div>
-    </div>`;
-
-  if (!available.length) {
-    resultBox.innerHTML = productHtml + '<div class="empty">El producto existe, pero todas las bases figuran con stock 0.</div>';
-    return;
-  }
-
-  resultBox.innerHTML = productHtml + `
-    <div class="cards">
-      ${available.map((item) => `
-        <button class="card card-button" type="button" data-base="${escapeHtml(item.base)}" title="Ver todos los productos con stock en ${escapeHtml(item.base)}">
-          <div class="name">${escapeHtml(item.base)}</div>
-          <div class="qty">${formatQty(item.qty)}</div>
-        </button>
-      `).join("")}
-    </div>`;
-}
-
-function renderTotals() {
-  const totals = Object.entries(state.totals || {});
-  if (!totals.length) {
-    totalsBox.innerHTML = "";
-    return;
-  }
-
-  totalsBox.innerHTML = totals.map(([base, qty]) => `
-    <button class="card card-button" type="button" data-base="${escapeHtml(base)}" title="Ver todos los productos con stock en ${escapeHtml(base)}">
-      <div class="name">${escapeHtml(base)}</div>
-      <div class="qty">${formatQty(qty)}</div>
-    </button>
-  `).join("");
-}
-
-function calculateBaseStats() {
-  const stats = {};
-  for (const base of BASE_COLUMNS) {
-    const colIndex = findHeaderIndex(state.stockHeader, base.col);
-    let positiveProducts = 0;
-    let negativeCells = 0;
-    let negativeQty = 0;
-    for (const row of state.stockRows) {
-      const qty = colIndex >= 0 ? asNumber(row[colIndex]) : 0;
-      if (qty > 0) positiveProducts += 1;
-      if (qty < 0) {
-        negativeCells += 1;
-        negativeQty += qty;
-      }
-    }
-    stats[base.base] = { positiveProducts, negativeCells, negativeQty };
-  }
-  return stats;
-}
-
-function renderQuality() {
-  const stats = Object.entries(state.baseStats || {});
-  if (!stats.length) {
-    qualityBox.innerHTML = '<div class="empty">Cargá una planilla para ver alertas y controles.</div>';
-    return;
-  }
-  const negativeCells = stats.reduce((sum, [, stat]) => sum + stat.negativeCells, 0);
-  const activeBases = stats.filter(([, stat]) => stat.positiveProducts > 0).length;
-  const negativeBases = stats.filter(([, stat]) => stat.negativeCells > 0);
-  qualityBox.innerHTML = `
-    <div class="alert-grid">
-      <div class="alert-card"><div class="label">Productos cargados</div><div class="value">${formatQty(state.stockRows.length)}</div></div>
-      <div class="alert-card"><div class="label">Bases activas</div><div class="value">${formatQty(activeBases)}</div></div>
-      <div class="alert-card ${negativeCells ? "danger" : ""}"><div class="label">Registros negativos</div><div class="value">${formatQty(negativeCells)}</div></div>
-    </div>
-    <div class="base-health" style="margin-top:16px">
-      ${negativeBases.length
-        ? negativeBases.map(([base, stat]) => `<button class="base-health-row link-btn" data-negative-base="${escapeHtml(base)}"><span>${escapeHtml(base)}: ${formatQty(stat.negativeCells)} registro(s) negativo(s)</span><span>Ver detalle</span></button>`).join("")
-        : '<div class="empty">No hay stock negativo en las bases cargadas.</div>'}
-    </div>`;
-}
-
-function toggleStock() {
-  state.stockVisible = !state.stockVisible;
-  if (state.stockVisible) {
-    stockSection.classList.remove("hidden");
-    stockBtn.textContent = "Ocultar stock";
-    renderStockTable();
-  } else {
-    stockSection.classList.add("hidden");
-    stockBtn.textContent = "Stock completo";
-  }
-}
-
-function rowHasStock(row) {
-  for (const base of BASE_COLUMNS) {
-    const colIndex = findHeaderIndex(state.stockHeader, base.col);
-    if (colIndex >= 0 && asNumber(row[colIndex]) > 0) return true;
-  }
-  return false;
-}
-
-function getFilteredRows() {
-  const concatCol = findHeaderIndex(state.stockHeader, "CONCAT");
-  const skuCol = findHeaderIndex(state.stockHeader, "SKU");
-  const lineaCol = findHeaderIndex(state.stockHeader, "LINEA");
-  const text = normalize(state.stockFilter.text);
-  const linea = normalize(state.stockFilter.linea);
-  const base = BASE_COLUMNS.find((item) => item.base === state.stockFilter.base);
-  const baseCol = base ? findHeaderIndex(state.stockHeader, base.col) : -1;
-  const negativeBase = BASE_COLUMNS.find((item) => item.base === state.stockFilter.negativeBase);
-  const negativeCol = negativeBase ? findHeaderIndex(state.stockHeader, negativeBase.col) : -1;
-
-  return state.stockRows.filter((row) => {
-    if (state.stockFilter.onlyStock && !rowHasStock(row)) return false;
-    if (base && (baseCol < 0 || asNumber(row[baseCol]) <= 0)) return false;
-    if (negativeBase && (negativeCol < 0 || asNumber(row[negativeCol]) >= 0)) return false;
-    if (linea && normalize(row[lineaCol]) !== linea) return false;
-    if (!text) return true;
-    const concat = concatCol >= 0 ? normalize(row[concatCol]) : "";
-    const sku = skuCol >= 0 ? normalize(row[skuCol]) : "";
-    return concat.includes(text) || sku.includes(text);
-  });
-}
-
-function showBaseStock(base) {
-  if (!BASE_COLUMNS.some((item) => item.base === base)) return;
-  state.stockFilter.base = base;
-  state.stockFilter.negativeBase = "";
-  stockFilterBase.value = base;
-  state.stockFilter.onlyStock = true;
-  stockFilterOnly.checked = true;
-  state.virtualScrollTop = 0;
-  state.stockVisible = true;
-  stockSection.classList.remove("hidden");
-  stockBtn.textContent = "Ocultar stock";
-  renderStockTable();
-  stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function showNegativeBaseStock(base) {
-  const item = BASE_COLUMNS.find((entry) => entry.base === base);
-  if (!item) return;
-  const colIndex = findHeaderIndex(state.stockHeader, item.col);
-  if (colIndex < 0) return;
-  state.stockFilter.base = "";
-  state.stockFilter.negativeBase = base;
-  stockFilterBase.value = "";
-  state.stockFilter.onlyStock = false;
-  stockFilterOnly.checked = false;
-  state.stockFilter.text = "";
-  stockFilterText.value = "";
-  state.stockVisible = true;
-  stockSection.classList.remove("hidden");
-  stockBtn.textContent = "Ocultar stock";
-  state.virtualScrollTop = 0;
-  renderStockTable();
-  stockSection.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function renderStockTable() {
-  const header = state.stockHeader;
-  const rows = getFilteredRows();
-  const negativeLabel = state.stockFilter.negativeBase ? ` · negativos en ${state.stockFilter.negativeBase}` : "";
-  stockInfo.textContent = `${rows.length} filas visibles${negativeLabel}`;
-
-  const viewportHeight = stockTable.clientHeight || 480;
-  const visibleCount = Math.ceil(viewportHeight / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2;
-  const start = Math.max(0, Math.floor(state.virtualScrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN);
-  const end = Math.min(rows.length, start + visibleCount);
-  const topSpacer = start * VIRTUAL_ROW_HEIGHT;
-  const bottomSpacer = Math.max(0, (rows.length - end) * VIRTUAL_ROW_HEIGHT);
-
-  stockTable.innerHTML = `
-    <table>
-      <thead>
-        <tr>${header.map((cell) => `<th>${escapeHtml(cell)}</th>`).join("")}</tr>
-      </thead>
-      <tbody>
-        <tr class="spacer"><td colspan="${header.length}" style="height:${topSpacer}px;padding:0;border:0"></td></tr>
-        ${rows.slice(start, end).map((row) => `
-          <tr style="height:${VIRTUAL_ROW_HEIGHT}px">
-            ${header.map((_, index) => {
-              const value = row[index] ?? "";
-              const numeric = typeof value === "number" || /^-?\d+(\.\d+)?$/.test(String(value));
-              return `<td class="${numeric ? "num" : ""}">${escapeHtml(value)}</td>`;
-            }).join("")}
-          </tr>
-        `).join("")}
-        <tr class="spacer"><td colspan="${header.length}" style="height:${bottomSpacer}px;padding:0;border:0"></td></tr>
-      </tbody>
-    </table>
-  `;
-}
-
-function exportSearchCopy() {
-  if (!state.lastSearch) return;
-  const lines = [
-    `Producto: ${state.lastSearch.query}`,
-    `SKU: ${state.lastSearch.product.sku}`,
-    `Color: ${state.lastSearch.product.color}`,
-    `Talle: ${state.lastSearch.product.talle}`,
-    `Nombre: ${state.lastSearch.product.nombre}`,
-    ""
-  ];
-  for (const item of state.lastSearch.available) {
-    lines.push(`${item.base}: ${formatQty(item.qty)}`);
-  }
-  navigator.clipboard.writeText(lines.join("\n")).then(() => {
-    setStatus("Resultado copiado al portapapeles.");
-  }).catch(() => {
-    setStatus("No pude copiar al portapapeles.");
-  });
-}
-
-function exportSearchCsv() {
-  if (!state.lastSearch) return;
-  const rows = [
-    ["campo", "valor"],
-    ["consulta", state.lastSearch.query],
-    ["sku", state.lastSearch.product.sku],
-    ["color", state.lastSearch.product.color],
-    ["talle", state.lastSearch.product.talle],
-    ["nombre", state.lastSearch.product.nombre],
-    ["linea", state.lastSearch.product.linea],
-    [],
-    ["base", "cantidad"]
-  ];
-  for (const item of state.lastSearch.available) {
-    rows.push([item.base, item.qty]);
-  }
-  const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `stock-${normalize(state.lastSearch.query).replace(/\s+/g, "-")}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-  setStatus("CSV descargado.");
-}
-
-function toggleTheme() {
-  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem("stock-theme", next);
-  themeBtn.textContent = next === "dark" ? "Modo claro" : "Modo oscuro";
-}
-
-function applySavedTheme() {
-  const saved = localStorage.getItem("stock-theme");
-  if (saved === "dark") {
-    document.documentElement.dataset.theme = "dark";
-    themeBtn.textContent = "Modo claro";
-  }
-}
-
+/* =========================================================
+   Escáner
+   ========================================================= */
 async function startScanner() {
   if (!("BarcodeDetector" in window)) {
-    setStatus("Tu navegador no soporta escaneo por cámara. Usá Chrome en el celular.");
+    setStatus("Este navegador no soporta escaneo por cámara. Usá Chrome en Android.", "err");
     return;
   }
-
   try {
-    scannerStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false
-    });
-    scannerVideo.srcObject = scannerStream;
-    await scannerVideo.play();
-    scannerModal.classList.remove("hidden");
-
+    scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    el.scannerVideo.srcObject = scannerStream;
+    await el.scannerVideo.play();
+    el.scannerModal.classList.remove("hidden");
     const detector = new BarcodeDetector({ formats: ["code_128", "code_39", "ean_13", "ean_8", "qr_code"] });
     scannerLoop = window.setInterval(async () => {
       try {
-        const codes = await detector.detect(scannerVideo);
-        if (!codes.length) return;
-        const raw = codes[0].rawValue || "";
+        const codes = await detector.detect(el.scannerVideo);
+        const raw = codes[0]?.rawValue || "";
         if (!raw) return;
-        searchInput.value = raw.trim();
         stopScanner();
-        searchStock();
-        setStatus(`Código escaneado: ${raw}`);
-      } catch {
-        // ignore intermittent detect errors
-      }
-    }, 350);
+        if (navigator.vibrate) navigator.vibrate(60);
+        el.searchInput.value = raw.trim();
+        runSearch(raw.trim());
+        setStatus(`Código escaneado: ${raw}`, "ok");
+      } catch { /* errores intermitentes del detector */ }
+    }, 300);
   } catch (error) {
-    setStatus(`No pude abrir la cámara: ${error.message}`);
+    setStatus(`No pude abrir la cámara: ${error.message}`, "err");
   }
 }
 
 function stopScanner() {
-  scannerModal.classList.add("hidden");
-  if (scannerLoop) {
-    clearInterval(scannerLoop);
-    scannerLoop = null;
-  }
-  if (scannerStream) {
-    scannerStream.getTracks().forEach((track) => track.stop());
-    scannerStream = null;
-  }
-  scannerVideo.srcObject = null;
+  el.scannerModal.classList.add("hidden");
+  if (scannerLoop) { clearInterval(scannerLoop); scannerLoop = null; }
+  if (scannerStream) { scannerStream.getTracks().forEach((t) => t.stop()); scannerStream = null; }
+  el.scannerVideo.srcObject = null;
+}
+
+/* =========================================================
+   Tema, navegación, reloj
+   ========================================================= */
+function syncThemeIcon() {
+  const dark = document.documentElement.dataset.theme !== "light";
+  el.themeBtn.innerHTML = icon(dark ? "sun" : "moon");
+  el.themeBtn.dataset.tip = dark ? "Modo claro" : "Modo oscuro";
+  document.querySelector('meta[name="theme-color"]').content = dark ? "#060a13" : "#eef2f8";
+}
+
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("stock-theme", next);
+  syncThemeIcon();
+}
+
+function setupNavObserver() {
+  const links = [...document.querySelectorAll("[data-nav]")];
+  const targets = links.map((a) => document.querySelector(a.getAttribute("href"))).filter(Boolean);
+  if (!("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver((entries) => {
+    const visible = entries.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    if (!visible) return;
+    links.forEach((a) => a.classList.toggle("active", a.getAttribute("href") === `#${visible.target.id}`));
+  }, { rootMargin: "-20% 0px -60% 0px" });
+  targets.forEach((t) => observer.observe(t));
+}
+
+function tickClock() {
+  el.clock.textContent = new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+  if (state.meta?.uploadedAt) el.updatedAt.textContent = `${formatDate(state.meta.uploadedAt)} · ${timeAgo(state.meta.uploadedAt)}`;
+}
+
+function renderAllEmpty() {
+  renderWelcome();
+  renderTotals();
+  renderQuality();
+  renderHistory();
+  renderComparisonEmpty();
+  renderStockTable();
 }
 
 function registerServiceWorker() {
@@ -777,70 +1140,158 @@ function registerServiceWorker() {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
-fileInput.addEventListener("change", loadWorkbook);
-searchBtn.addEventListener("click", searchStock);
-stockBtn.addEventListener("click", toggleStock);
-scanBtn.addEventListener("click", startScanner);
-scannerClose.addEventListener("click", stopScanner);
-themeBtn.addEventListener("click", toggleTheme);
-exportCopyBtn.addEventListener("click", exportSearchCopy);
-exportCsvBtn.addEventListener("click", exportSearchCsv);
-compareBtn.addEventListener("click", compareWithPrevious);
-searchInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !searchBtn.disabled) searchStock();
+/* =========================================================
+   Eventos
+   ========================================================= */
+el.uploadBtn.addEventListener("click", () => el.fileInput.click());
+el.fileInput.addEventListener("change", () => handleFile(el.fileInput.files?.[0]));
+el.scanBtn.addEventListener("click", startScanner);
+el.scannerClose.addEventListener("click", stopScanner);
+el.themeBtn.addEventListener("click", toggleTheme);
+el.exportCopyBtn.addEventListener("click", () => state.current && copyText(currentProductLines().join("\n"), "Resultado copiado al portapapeles."));
+el.exportCsvBtn.addEventListener("click", exportSearchCsv);
+el.shareBtn.addEventListener("click", () => state.current && copyText(location.href, "Enlace copiado: abre directamente esta consulta."));
+el.compareBtn.addEventListener("click", () => compare());
+el.exportCompareBtn.addEventListener("click", exportComparison);
+el.exportStockBtn.addEventListener("click", exportStockView);
+el.kpiNegBtn.addEventListener("click", () => state.rows.length && applyFilter({ mode: "negative", negBase: "", base: "" }, true));
+
+el.searchInput.addEventListener("input", () => {
+  clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(updateSuggestions, 70);
 });
-searchInput.addEventListener("input", () => {
-  clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(() => {
-    if (!searchBtn.disabled && normalize(searchInput.value).length >= 3) searchStock();
-  }, 300);
+el.searchInput.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown") { event.preventDefault(); moveSuggestion(1); }
+  else if (event.key === "ArrowUp") { event.preventDefault(); moveSuggestion(-1); }
+  else if (event.key === "Enter") {
+    event.preventDefault();
+    clearTimeout(suggestTimer);
+    const chosen = state.suggestions[state.activeSuggestion];
+    if (chosen && !el.suggest.classList.contains("hidden")) showProduct(chosen.key);
+    else runSearch(el.searchInput.value);
+  } else if (event.key === "Escape") {
+    if (!el.suggest.classList.contains("hidden")) hideSuggestions();
+    else { el.searchInput.value = ""; el.searchInput.blur(); }
+  }
 });
-stockFilterText.addEventListener("input", () => {
-  state.stockFilter.text = stockFilterText.value;
-  if (state.stockVisible) renderStockTable();
+el.searchInput.addEventListener("focus", () => { if (normalize(el.searchInput.value).length >= 2 && el.searchInput.value !== state.current) updateSuggestions(); });
+el.searchInput.addEventListener("blur", () => setTimeout(hideSuggestions, 160));
+el.suggest.addEventListener("mousedown", (event) => {
+  const item = event.target.closest("[data-key]");
+  if (item) { event.preventDefault(); showProduct(item.dataset.key); el.searchInput.blur(); }
 });
-stockFilterLinea.addEventListener("change", () => {
-  state.stockFilter.linea = stockFilterLinea.value;
-  if (state.stockVisible) renderStockTable();
-});
-stockFilterBase.addEventListener("change", () => {
-  state.stockFilter.base = stockFilterBase.value;
-  state.stockFilter.negativeBase = "";
-  state.virtualScrollTop = 0;
-  if (state.stockVisible) renderStockTable();
-});
-stockFilterOnly.addEventListener("change", () => {
-  state.stockFilter.onlyStock = stockFilterOnly.checked;
-  if (state.stockVisible) renderStockTable();
-});
-totalsBox.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-base]");
-  if (button) showBaseStock(button.dataset.base);
-});
-resultBox.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-base]");
-  if (button) showBaseStock(button.dataset.base);
-});
-qualityBox.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-negative-base]");
-  if (button) showNegativeBaseStock(button.dataset.negativeBase);
-});
-stockTable.addEventListener("scroll", () => {
-  state.virtualScrollTop = stockTable.scrollTop;
-  if (state.stockVisible) renderStockTable();
+el.recent.addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-key]");
+  if (chip) showProduct(chip.dataset.key);
 });
 
-applySavedTheme();
+el.resultBox.addEventListener("click", (event) => {
+  if (event.target.closest("[data-action='upload']")) { el.fileInput.click(); return; }
+  const variant = event.target.closest(".variant[data-key]");
+  if (variant) { showProduct(variant.dataset.key); return; }
+  const bar = event.target.closest("[data-base]");
+  if (bar) applyFilter({ base: bar.dataset.base === PENDING_BASE ? "" : bar.dataset.base, negBase: "", mode: "stock", text: "", linea: "" }, true);
+});
+el.totalsBox.addEventListener("click", (event) => {
+  const bar = event.target.closest("[data-base]");
+  if (bar && bar.dataset.base !== PENDING_BASE) applyFilter({ base: bar.dataset.base, negBase: "", mode: "stock", text: "", linea: "" }, true);
+});
+el.qualityBox.addEventListener("click", (event) => {
+  const mode = event.target.closest("[data-mode]");
+  if (mode) { applyFilter({ mode: mode.dataset.mode, base: "", negBase: "", text: "" }, true); return; }
+  const neg = event.target.closest("[data-negative-base]");
+  if (neg) applyFilter({ negBase: neg.dataset.negativeBase, base: "", mode: "", text: "", linea: "" }, true);
+});
+
+el.stockFilterText.addEventListener("input", () => {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { state.filter.text = el.stockFilterText.value; resetView(); }, 120);
+});
+el.stockFilterLinea.addEventListener("change", () => applyFilter({ linea: el.stockFilterLinea.value }));
+el.stockFilterBase.addEventListener("change", () => applyFilter({ base: el.stockFilterBase.value, negBase: "" }));
+el.stockFilterMode.addEventListener("change", () => applyFilter({ mode: el.stockFilterMode.value }));
+el.clearFiltersBtn.addEventListener("click", () => { state.sort = { col: -1, dir: 1 }; applyFilter({ text: "", linea: "", base: "", mode: "", negBase: "" }); });
+el.activeFilter.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-clear]");
+  if (btn) applyFilter({ [btn.dataset.clear]: "" });
+});
+el.stockTable.addEventListener("scroll", () => {
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; renderVisibleRows(); });
+}, { passive: true });
+el.stockTable.addEventListener("click", (event) => {
+  const th = event.target.closest("th[data-col]");
+  if (th) {
+    const col = Number(th.dataset.col);
+    state.sort = state.sort.col === col ? { col, dir: state.sort.dir === 1 ? -1 : 1 } : { col, dir: state.baseColIdx.has(col) ? -1 : 1 };
+    resetView();
+    return;
+  }
+  const tr = event.target.closest("tr[data-row]");
+  if (tr) {
+    const key = state.rowInfo[Number(tr.dataset.row)]?.key;
+    if (key && state.index[key]) { showProduct(key); $("resultPanel").scrollIntoView({ behavior: "smooth", block: "start" }); }
+  }
+});
+
+el.historyBox.addEventListener("click", (event) => {
+  const cmp = event.target.closest("[data-compare-id]");
+  if (cmp) { compare(cmp.dataset.compareId); return; }
+  const del = event.target.closest("[data-delete-id]");
+  if (del) deleteHistory(del.dataset.deleteId);
+});
+el.compareBox.addEventListener("input", (event) => {
+  if (event.target.id !== "cmpText") return;
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { state.compareFilter.text = event.target.value; state.compareLimit = COMPARE_PAGE; renderComparisonTable(); }, 150);
+});
+el.compareBox.addEventListener("change", (event) => {
+  if (event.target.id === "cmpBase") state.compareFilter.base = event.target.value;
+  else if (event.target.id === "cmpType") state.compareFilter.type = event.target.value;
+  else return;
+  state.compareLimit = COMPARE_PAGE;
+  renderComparisonTable();
+});
+el.compareBox.addEventListener("click", (event) => {
+  if (event.target.closest("#cmpMore")) { state.compareLimit += COMPARE_PAGE; renderComparisonTable(); return; }
+  const tr = event.target.closest("tr[data-key]");
+  if (tr && state.index[tr.dataset.key]) { showProduct(tr.dataset.key); $("resultPanel").scrollIntoView({ behavior: "smooth", block: "start" }); }
+});
+
+// Atajos de teclado
+document.addEventListener("keydown", (event) => {
+  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "");
+  if ((event.key === "/" && !typing) || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k")) {
+    if (el.searchInput.disabled) return;
+    event.preventDefault();
+    el.searchInput.focus();
+    el.searchInput.select();
+  } else if (event.key === "Escape" && !el.scannerModal.classList.contains("hidden")) {
+    stopScanner();
+  }
+});
+
+// Arrastrar y soltar la planilla
+let dragDepth = 0;
+const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+window.addEventListener("dragenter", (event) => { if (!hasFiles(event)) return; dragDepth++; el.dropOverlay.classList.remove("hidden"); });
+window.addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) el.dropOverlay.classList.add("hidden"); });
+window.addEventListener("dragover", (event) => { if (hasFiles(event)) event.preventDefault(); });
+window.addEventListener("drop", (event) => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  el.dropOverlay.classList.add("hidden");
+  handleFile(event.dataTransfer.files[0]);
+});
+
+/* =========================================================
+   Inicio
+   ========================================================= */
+syncThemeIcon();
+setupNavObserver();
+renderRecent();
+tickClock();
+setInterval(tickClock, 30000);
 registerServiceWorker();
-exportCopyBtn.disabled = true;
-exportCsvBtn.disabled = true;
-compareBtn.disabled = true;
-
-if (!window.__stockAppLoaded) {
-  document.getElementById("status").textContent =
-    "No se cargó app.js. En Portainer tenés que usar el Dockerfile Python nuevo (no solo Nginx).";
-} else {
-  loadServerWorkbook().then((loaded) => {
-    if (!loaded) checkServerVersion();
-  });
-}
+init().then(renderRecent);
