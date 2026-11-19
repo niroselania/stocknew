@@ -13,7 +13,7 @@ services:
       # UPLOAD_TOKEN: "cambiar-este-codigo"
       # Bot de Telegram (opcional): token de @BotFather e ids de chat autorizados
       # TELEGRAM_BOT_TOKEN: "9164753155:AAGnnPAiR0H4N5G0nutPmbaTBtFptSVVC1M"
-      # TELEGRAM_ALLOWED_CHATS: "9164753155"
+      # TELEGRAM_ALLOWED_CHATS: "1477135279"
       # PRICE_COLUMN: "RETAIL"   # el precio sale de la columna RETAIL; cambiar sólo si el encabezado es otro
 
 volumes:
