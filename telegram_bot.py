@@ -24,9 +24,15 @@ from typing import Any, Callable
 
 from stock_processor import normalize
 
-API_BASE = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
-BASE = normalize(os.environ.get("TELEGRAM_BASE", "LOCAL")) or "LOCAL"
-MAX_ITEMS = int(os.environ.get("TELEGRAM_MAX_ITEMS", "40"))
+def env(name: str, default: str = "") -> str:
+    """Lee una variable y limpia espacios y comillas (Portainer las deja tal cual si se pegan)."""
+    value = os.environ.get(name, default) or ""
+    return value.strip().strip("\"'").strip()
+
+
+API_BASE = env("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+BASE = normalize(env("TELEGRAM_BASE", "LOCAL")) or "LOCAL"
+MAX_ITEMS = int(env("TELEGRAM_MAX_ITEMS", "40") or 40)
 
 HELP_TEXT = (
     "📦 <b>Consulta de stock · {base}</b>\n\n"
@@ -128,7 +134,7 @@ class StockLookup:
         shown = html.escape(query.strip().upper())
         matches = self.find(query)
         if not matches:
-            return f"❌ <b>{shown}</b>: no hay stock en {BASE}."
+            return f"❓ <b>{shown}</b>: ese código no existe en la planilla."
 
         in_stock = [(k, v) for k, v in matches if float(v.get("bases", {}).get(BASE, 0) or 0) > 0]
         if not in_stock:
@@ -165,7 +171,10 @@ class TelegramBot:
         self.allowed = allowed
         self.log = log
         self.offset = 0
-        self.status: dict[str, Any] = {"enabled": True, "connected": False, "username": None, "lastError": None}
+        self.status: dict[str, Any] = {
+            "enabled": True, "connected": False, "username": None, "lastError": None,
+            "base": BASE, "allowedChats": len(allowed), "lastMessageAt": None,
+        }
 
     # --- API ---
     def call(self, method: str, payload: dict | None = None, timeout: float = 30) -> Any:
@@ -213,6 +222,7 @@ class TelegramBot:
             self.send(chat_id, "No conozco ese comando. Mandame directamente el código o /ayuda.")
             return
 
+        self.status["lastMessageAt"] = int(time.time())
         answer = self.lookup.answer(text)
         self.log(f"[telegram] consulta '{text}' de {chat_id} -> {answer.splitlines()[0][:80]}")
         self.send(chat_id, answer, reply_to=message.get("message_id"))
@@ -267,14 +277,16 @@ class TelegramBot:
 
 
 def start_bot(data_file: Path) -> TelegramBot | None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    token = env("TELEGRAM_BOT_TOKEN")
     if not token:
         return None
     allowed = set()
-    for part in os.environ.get("TELEGRAM_ALLOWED_CHATS", "").replace(";", ",").split(","):
-        part = part.strip()
+    for part in re.split(r"[,; \n]+", env("TELEGRAM_ALLOWED_CHATS")):
+        part = part.strip().strip("\"'")
         if part.lstrip("-").isdigit():
             allowed.add(int(part))
+    if ":" not in token:
+        print("[telegram] OJO: el token no tiene el formato 123456789:AAxxxx. Revisá TELEGRAM_BOT_TOKEN.", flush=True)
     bot = TelegramBot(token, StockLookup(data_file), allowed, log=lambda m: print(m, flush=True))
     threading.Thread(target=bot.run, name="telegram-bot", daemon=True).start()
     return bot

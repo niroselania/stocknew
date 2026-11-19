@@ -9,9 +9,10 @@ services:
       - /opt/stock-buscador/data:/data
     environment:
       HISTORY_MAX: "30"
-      # Opcional: pedir un código para subir o borrar planillas
-      # UPLOAD_TOKEN: "cambiar-este-codigo"
+      # Valores: Portainer > Stack > Environment variables
+      UPLOAD_TOKEN: ${UPLOAD_TOKEN:-}
       # Bot de Telegram (opcional): token de @BotFather e ids de chat autorizados
-      # TELEGRAM_BOT_TOKEN: "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-      # TELEGRAM_ALLOWED_CHATS: "123456789,-1001234567890"
-      # PRICE_COLUMN: "RETAIL"   # el precio sale de la columna RETAIL; cambiar sólo si el encabezado es otro
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
+      PRICE_COLUMN: ${PRICE_COLUMN:-}
+      TELEGRAM_BASE: ${TELEGRAM_BASE:-LOCAL}

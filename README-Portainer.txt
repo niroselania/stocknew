@@ -50,13 +50,14 @@ variantes que tienen stock en LOCAL. Si no hay unidades en LOCAL responde
 Activarlo:
 1. En Telegram hablale a @BotFather, mandá /newbot, elegí nombre y usuario.
    Te da un token tipo 123456789:AAxxxx...  (no lo compartas).
-2. En el stack agregá en environment:
-     TELEGRAM_BOT_TOKEN: "el-token"
-   y hacé "Update the stack" con rebuild.
+2. En Portainer > Stacks > tu stack > Environment variables agregá:
+     TELEGRAM_BOT_TOKEN   = el-token
+   (el docker-compose.yml ya las pasa al contenedor con ${TELEGRAM_BOT_TOKEN}).
+   Guardá con "Redeploy" tildado.
 3. Escribile /id al bot desde tu chat (o desde un grupo donde lo agregues).
-   Copiá ese número y agregalo en el stack:
-     TELEGRAM_ALLOWED_CHATS: "123456789,-1001234567890"
-   (varios separados por coma). Volvé a hacer "Update the stack".
+   Agregá otra variable:
+     TELEGRAM_ALLOWED_CHATS = 123456789,-1001234567890
+   (varios separados por coma) y volvé a hacer Redeploy.
    Sin esta lista cualquiera que encuentre el bot puede consultar stock y precios.
 4. Verificación: http://IP-DE-TU-SERVIDOR:8085/api/health muestra
    "telegram": {"connected": true, "username": "..."}.
@@ -107,3 +108,13 @@ Notas
 - HISTORY_MAX controla cuántas planillas se conservan (default 30).
 - UPLOAD_TOKEN (opcional): si lo definís, subir o borrar planillas pide ese
   código (se pide una vez por navegador). Consultar no pide nada.
+
+SI EL BOT NO RESPONDE (v3.1.2)
+1. Abrí http://IP:8085/api/health y mirá "telegram":
+   - enabled:false  -> el contenedor no recibió TELEGRAM_BOT_TOKEN (cargalo en Portainer > Environment variables y Update/Redeploy).
+   - connected:false + lastError -> el contenedor no llega a Telegram (internet/DNS) o el token es inválido.
+   - products:0 -> falta subir la planilla a este servidor.
+   - allowedChats:0 -> cualquiera puede consultar; si pusiste ids y responde "no autorizado", revisá TELEGRAM_ALLOWED_CHATS.
+2. No uses el mismo token en dos contenedores (error 409).
+3. En grupos, escribí /stock CODIGO (Telegram no entrega texto común a bots con privacidad activa).
+4. IMPORTANTE: subí a GitHub TODOS los archivos (incluido telegram_bot.py, Dockerfile y docker-compose.yml nuevos).

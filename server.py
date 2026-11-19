@@ -128,6 +128,7 @@ def process_upload(stock_path: Path, original_name: str, uploaded_at: int | None
     # El navegador no necesita "inventory" (sólo se usa para comparar): payload más liviano.
     client_payload = {key: value for key, value in payload.items() if key != "inventory"}
     client_payload["dataVersion"] = history_id
+    client_payload["serverVersion"] = VERSION
     write_json_atomic(DATA_FILE, client_payload, compress=True)
     write_json_atomic(META_FILE, meta)
     return meta
@@ -155,7 +156,9 @@ class StockHandler(BaseHTTPRequestHandler):
             return self.send_file(APP_DIR / filename, content_type, revalidate=True)
 
         if path == "/api/health":
-            telegram = dict(TELEGRAM_BOT.status) if TELEGRAM_BOT else {"enabled": False}
+            telegram = dict(TELEGRAM_BOT.status) if TELEGRAM_BOT else {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN vacío o no llegó al contenedor"}
+            if TELEGRAM_BOT:
+                telegram["products"] = len(TELEGRAM_BOT.lookup.index())
             return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists(), "version": VERSION, "telegram": telegram})
 
         if path == "/api/version":
@@ -407,6 +410,9 @@ def ensure_processed_stock() -> None:
         return
     needs = not DATA_FILE.exists() or not DATA_FILE_GZ.exists()
     if not needs:
+        # Procesada con otra versión (p. ej. antes de que existiera el precio RETAIL): reprocesar.
+        needs = (read_json(DATA_FILE, {}) or {}).get("serverVersion") != VERSION
+    if not needs:
         return
     try:
         old_meta = read_json(META_FILE, {}) or {}
@@ -435,7 +441,7 @@ if __name__ == "__main__":
     ensure_processed_stock()
     TELEGRAM_BOT = start_bot(DATA_FILE)
     if TELEGRAM_BOT is None:
-        print("Bot de Telegram desactivado (definí TELEGRAM_BOT_TOKEN para activarlo).", flush=True)
+        print("Bot de Telegram DESACTIVADO: el contenedor no recibió TELEGRAM_BOT_TOKEN. En Portainer cargalo en Stack > Environment variables y hacé Update/Redeploy.", flush=True)
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StockHandler)
     print(f"Stock server v{VERSION} listening on {port}" + (" (carga protegida con código)" if UPLOAD_TOKEN else ""), flush=True)

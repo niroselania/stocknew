@@ -1,6 +1,8 @@
 services:
   stock-buscador:
     build: .
+    image: stock-buscador:3.1.1
+    pull_policy: build        # en Portainer: reconstruye la imagen en cada redeploy
     container_name: stock-buscador
     restart: unless-stopped
     ports:
@@ -9,12 +11,13 @@ services:
       - stock-data:/data
     environment:
       HISTORY_MAX: "30"
-      # Opcional: pedir un código para subir o borrar planillas
-      # UPLOAD_TOKEN: "cambiar-este-codigo"
-      # Bot de Telegram (opcional): token de @BotFather e ids de chat autorizados
-      # TELEGRAM_BOT_TOKEN: "9164753155:AAGnnPAiR0H4N5G0nutPmbaTBtFptSVVC1M"
-      # TELEGRAM_ALLOWED_CHATS: "1477135279"
-      # PRICE_COLUMN: "RETAIL"   # el precio sale de la columna RETAIL; cambiar sólo si el encabezado es otro
+      # Estos valores se cargan en Portainer > Stack > Environment variables
+      # (no hace falta escribir el token acá; si una variable no existe, queda vacía).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
+      TELEGRAM_BASE: ${TELEGRAM_BASE:-LOCAL}
+      UPLOAD_TOKEN: ${UPLOAD_TOKEN:-}
+      PRICE_COLUMN: ${PRICE_COLUMN:-}
 
 volumes:
   stock-data:
