@@ -12,8 +12,10 @@ import threading
 import time
 
 from stock_processor import build_stock_payload, compare_inventories, make_history_id
+from telegram_bot import start_bot
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
+TELEGRAM_BOT = None
 
 APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -117,6 +119,7 @@ def process_upload(stock_path: Path, original_name: str, uploaded_at: int | None
         "productCount": payload["productCount"],
         "totals": payload["totals"],
         "processSeconds": round(time.time() - started, 2),
+        "priceColumn": payload.get("priceColumn"),
     }
     entries = load_history_index()
     entries.insert(0, meta)
@@ -152,7 +155,8 @@ class StockHandler(BaseHTTPRequestHandler):
             return self.send_file(APP_DIR / filename, content_type, revalidate=True)
 
         if path == "/api/health":
-            return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists(), "version": VERSION})
+            telegram = dict(TELEGRAM_BOT.status) if TELEGRAM_BOT else {"enabled": False}
+            return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists(), "version": VERSION, "telegram": telegram})
 
         if path == "/api/version":
             return self.send_json(
@@ -161,7 +165,8 @@ class StockHandler(BaseHTTPRequestHandler):
                     "uploadFix": True,
                     "authRequired": bool(UPLOAD_TOKEN),
                     "historyMax": HISTORY_MAX,
-                    "features": ["history", "compare", "stock-data", "preprocess", "gzip", "etag", "delete", "download"],
+                    "features": ["history", "compare", "stock-data", "preprocess", "gzip", "etag", "delete", "download", "price", "telegram"],
+                    "telegram": bool(TELEGRAM_BOT and TELEGRAM_BOT.status.get("enabled")),
                 }
             )
 
@@ -286,7 +291,7 @@ class StockHandler(BaseHTTPRequestHandler):
                 shutil.copyfileobj(field.file, output)
             meta = process_upload(upload_file, Path(field.filename).name)
             upload_file.replace(STOCK_FILE)
-            print(f"Planilla cargada: {meta['name']} ({meta['productCount']} productos, {meta['processSeconds']}s)", flush=True)
+            print(f"Planilla cargada: {meta['name']} ({meta['productCount']} productos, {meta['processSeconds']}s) · precio: {meta.get('priceColumn') or 'NO ENCONTRÉ columna RETAIL'}", flush=True)
             self.send_json(meta)
         except Exception as error:
             if upload_file.exists():
@@ -428,6 +433,9 @@ if __name__ == "__main__":
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ensure_processed_stock()
+    TELEGRAM_BOT = start_bot(DATA_FILE)
+    if TELEGRAM_BOT is None:
+        print("Bot de Telegram desactivado (definí TELEGRAM_BOT_TOKEN para activarlo).", flush=True)
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StockHandler)
     print(f"Stock server v{VERSION} listening on {port}" + (" (carga protegida con código)" if UPLOAD_TOKEN else ""), flush=True)

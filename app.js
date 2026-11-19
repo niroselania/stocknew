@@ -621,6 +621,7 @@ function showProduct(key, { silent = false } = {}) {
           ${product.color !== "" ? `<span class="chip violet">COLOR ${escapeHtml(product.color)}</span>` : ""}
           ${product.talle !== "" ? `<span class="chip green">TALLE ${escapeHtml(product.talle)}</span>` : ""}
           ${product.linea ? `<span class="chip">${escapeHtml(product.linea)}</span>` : ""}
+          ${product.precio ? `<span class="chip amber">$ ${escapeHtml(new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(product.precio))}</span>` : ""}
         </div>
       </div>
       <div class="product-total">

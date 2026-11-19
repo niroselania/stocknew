@@ -1,8 +1,9 @@
-Buscador de stock v3.0.0 - Portainer
+Buscador de stock v3.1.0 - Portainer
 
 Archivos principales:
 - stock-buscador.html + app.js: interfaz (centro de control, tema oscuro/claro).
 - server.py + stock_processor.py: API, historial y preprocesado.
+- telegram_bot.py: bot de Telegram (corre dentro del mismo servidor).
 - xlsx-worker.js: lectura de Excel en el navegador (respaldo si no hay servidor).
 - Dockerfile: imagen Python con openpyxl.
 
@@ -34,6 +35,41 @@ volumes:
   stock-data:
 
 Abrilo en http://IP-DE-TU-SERVIDOR:8085
+
+BOT DE TELEGRAM (v3.1.0)
+Mandás un código y responde con código, color, talle, cantidad y precio de las
+variantes que tienen stock en LOCAL. Si no hay unidades en LOCAL responde
+"no hay stock en LOCAL". Si el código no existe, lo avisa.
+  25551          -> todas las variantes del SKU con stock en LOCAL
+  25551 NLSA     -> sólo ese color
+  25551 NLSA M   -> esa variante
+  /stock 25551   -> lo mismo (útil en grupos)
+  /id            -> muestra el id del chat
+  /ayuda         -> instrucciones
+
+Activarlo:
+1. En Telegram hablale a @BotFather, mandá /newbot, elegí nombre y usuario.
+   Te da un token tipo 123456789:AAxxxx...  (no lo compartas).
+2. En el stack agregá en environment:
+     TELEGRAM_BOT_TOKEN: "el-token"
+   y hacé "Update the stack" con rebuild.
+3. Escribile /id al bot desde tu chat (o desde un grupo donde lo agregues).
+   Copiá ese número y agregalo en el stack:
+     TELEGRAM_ALLOWED_CHATS: "123456789,-1001234567890"
+   (varios separados por coma). Volvé a hacer "Update the stack".
+   Sin esta lista cualquiera que encuentre el bot puede consultar stock y precios.
+4. Verificación: http://IP-DE-TU-SERVIDOR:8085/api/health muestra
+   "telegram": {"connected": true, "username": "..."}.
+No hace falta abrir puertos: el servidor sale a Telegram (necesita internet).
+No uses el mismo token en dos contenedores a la vez.
+
+Precio: se toma ÚNICAMENTE de la columna de precio RETAIL (encabezado "RETAIL",
+"PRECIO RETAIL" o que contenga la palabra RETAIL), en la pestaña STOCK o en una
+pestaña PRECIOS / LISTA DE PRECIOS (con CONCAT o SKU). Otras columnas de precio
+se ignoran. La columna "RE" es el stock de la base RETAIL y nunca se usa como precio.
+Si una prenda no tiene valor en RETAIL, el bot muestra "sin precio".
+Si el encabezado se llama distinto, definí PRICE_COLUMN con el nombre exacto.
+Al subir cada planilla, el registro del contenedor indica qué columna de precio usó.
 
 Novedades v3.0.0
 Interfaz

@@ -21,6 +21,14 @@ BASE_COLUMNS = [
     {"base": "PENDIENTES", "col": "P.PAGO"},
 ]
 
+import os
+
+# El precio se toma ÚNICAMENTE de la columna de precio RETAIL.
+# Ojo: la columna "RE" es el STOCK de la base RETAIL, no el precio; nunca se usa como precio.
+# Si en la planilla el encabezado se llama distinto, se puede forzar con PRICE_COLUMN.
+PRICE_CANDIDATES = ["RETAIL", "PRECIO RETAIL", "P.RETAIL", "P. RETAIL", "PRECIO RETAIL $", "RETAIL $"]
+PRICE_SHEETS = ["PRECIOS", "LISTA DE PRECIOS", "LISTA PRECIOS"]
+
 _NUMBER_CLEAN = re.compile(r"[^\d.\-]")
 _SPACES = re.compile(r"\s+")
 
@@ -69,6 +77,80 @@ def is_total_row(row: list[Any]) -> bool:
     return any(isinstance(cell, str) and normalize(cell) == "TOTAL" for cell in row)
 
 
+def parse_price(value: Any) -> float | None:
+    """Convierte '$ 45.990,50', '45990.5' o 45990 en número. Vacío -> None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value == value and value > 0 else None
+    text = re.sub(r"[^\d.,\-]", "", str(value))
+    if not text:
+        return None
+    if "," in text and "." in text:
+        # el último separador es el decimal
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        head, _, tail = text.rpartition(",")
+        text = head.replace(",", "") + ("." + tail if len(tail) != 3 else tail)
+    elif text.count(".") > 1 or (text.count(".") == 1 and len(text.rpartition(".")[2]) == 3):
+        text = text.replace(".", "")
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def find_price_column(header: list[Any]) -> int:
+    stock_cols = {normalize(base["col"]) for base in BASE_COLUMNS}
+    forced = os.environ.get("PRICE_COLUMN", "").strip()
+    if forced:
+        return find_header_index(header, forced)
+    for name in PRICE_CANDIDATES:
+        index = find_header_index(header, name)
+        if index >= 0:
+            return index
+    # Cualquier encabezado que contenga RETAIL (p.ej. "PRECIO RETAIL ARS"), nunca una columna de stock.
+    for index, cell in enumerate(header):
+        name = normalize(cell)
+        if "RETAIL" in name and name not in stock_cols:
+            return index
+    return -1
+
+
+def build_price_lookup(rows: list[list[Any]] | None) -> tuple[dict[str, float], dict[str, float]]:
+    """Pestaña de precios opcional: por CONCAT y/o por SKU."""
+    by_concat: dict[str, float] = {}
+    by_sku: dict[str, float] = {}
+    if not rows:
+        return by_concat, by_sku
+    for start, header in enumerate(rows[:10]):
+        price_col = find_price_column(list(header))
+        if price_col < 0:
+            continue
+        concat_col = find_header_index(list(header), "CONCAT")
+        sku_col = find_header_index(list(header), "SKU")
+        if concat_col < 0 and sku_col < 0:
+            continue
+        for row in rows[start + 1:]:
+            if not row or price_col >= len(row):
+                continue
+            price = parse_price(row[price_col])
+            if price is None:
+                continue
+            if 0 <= concat_col < len(row) and normalize(row[concat_col]):
+                by_concat[normalize(row[concat_col])] = price
+            if 0 <= sku_col < len(row) and normalize(clean_value(row[sku_col])):
+                by_sku.setdefault(normalize(clean_value(row[sku_col])), price)
+        break
+    return by_concat, by_sku
+
+
 def read_sheets(workbook_path: Path, names: list[str]) -> dict[str, list[list[Any]] | None]:
     """Abre el Excel una sola vez y devuelve las pestañas pedidas."""
     workbook = load_workbook(workbook_path, read_only=True, data_only=True)
@@ -104,7 +186,7 @@ def detect_pending_columns(pending_rows: list[list[Any]]) -> tuple[int, int]:
 
 
 def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
-    sheets = read_sheets(workbook_path, ["STOCK", "PENDIENTES"])
+    sheets = read_sheets(workbook_path, ["STOCK", "PENDIENTES", *PRICE_SHEETS])
     stock_rows = sheets["STOCK"]
     if stock_rows is None:
         raise ValueError("No encontré una pestaña llamada STOCK.")
@@ -121,6 +203,9 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
     linea_col = find_header_index(header, "LINEA")
     # Índices de columnas de bases calculados una sola vez (antes era por fila).
     base_cols = [(base["base"], find_header_index(header, base["col"])) for base in BASE_COLUMNS]
+    price_col = find_price_column(header)
+    price_sheet = next((sheets[name] for name in PRICE_SHEETS if sheets.get(name)), None)
+    prices_by_concat, prices_by_sku = build_price_lookup(price_sheet)
 
     pending_qty_col, pending_concat_col = detect_pending_columns(pending_rows)
     pending_by_concat: dict[str, float] = {}
@@ -173,6 +258,11 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
             "talle": cell(row_values, talle_col),
             "nombre": cell(row_values, nombre_col),
             "linea": cell(row_values, linea_col),
+            "precio": (
+                (parse_price(row_values[price_col]) if price_col >= 0 else None)
+                or prices_by_concat.get(key)
+                or prices_by_sku.get(normalize(cell(row_values, sku_col)))
+            ),
             "bases": bases,
         }
         linea = normalize(product["linea"])
@@ -203,6 +293,7 @@ def build_stock_payload(workbook_path: Path) -> dict[str, Any]:
         "totals": totals,
         "lineas": sorted(lineas),
         "productCount": len(data_rows),
+        "priceColumn": header[price_col] if price_col >= 0 else ("pestaña de precios" if price_sheet else None),
     }
 
 
