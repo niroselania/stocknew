@@ -1,4 +1,4 @@
-Buscador de stock v3.1.0 - Portainer
+Buscador de stock v3.1.1 - Portainer
 
 Archivos principales:
 - stock-buscador.html + app.js: interfaz (centro de control, tema oscuro/claro).
@@ -36,7 +36,7 @@ volumes:
 
 Abrilo en http://IP-DE-TU-SERVIDOR:8085
 
-BOT DE TELEGRAM (v3.1.0)
+BOT DE TELEGRAM (v3.1.1)
 Mandás un código y responde con código, color, talle, cantidad y precio de las
 variantes que tienen stock en LOCAL. Si no hay unidades en LOCAL responde
 "no hay stock en LOCAL". Si el código no existe, lo avisa.

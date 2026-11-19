@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -36,6 +37,13 @@ HELP_TEXT = (
     "Te respondo código, color, talle, cantidad y precio. "
     "Si no hay unidades en {base}, te aviso que no hay stock."
 )
+
+
+_NOT_ALNUM = re.compile(r"[^0-9A-Z]")
+
+
+def compact(value: Any) -> str:
+    return _NOT_ALNUM.sub("", normalize(value))
 
 
 def fmt_number(value: float) -> str:
@@ -80,22 +88,38 @@ class StockLookup:
             return self._index
 
     def find(self, query: str) -> list[tuple[str, dict]]:
+        """Búsqueda tolerante (igual de flexible que la web).
+
+        Ignora espacios, guiones, puntos y barras, así "25551NLSAM", "25551 NLSA M"
+        y "25551-NLSA-M" dan lo mismo.
+        """
         q = normalize(query)
-        if not q:
+        qc = compact(q)
+        if not qc:
             return []
         index = self.index()
         if q in index:
             return [(q, index[q])]
-        # SKU / SKU+COLOR: todas las claves que empiezan con lo escrito (por palabra completa)
-        prefix = [(k, v) for k, v in index.items() if k.startswith(q + " ")]
-        if prefix:
-            return sorted(prefix, key=sort_key)
-        sku_matches = [(k, v) for k, v in index.items() if normalize(v.get("sku")) == q]
-        if sku_matches:
-            return sorted(sku_matches, key=sort_key)
+        entries = [(k, v, compact(k), compact(v.get("sku"))) for k, v in index.items()]
+        exact = [(k, v) for k, v, kc, _ in entries if kc == qc]
+        if len(exact) == 1:
+            return exact
+        # SKU completo -> todas sus variantes
+        tiers = [
+            [(k, v) for k, v, _, sc in entries if sc and sc == qc],
+            # SKU+color, SKU+color+talle parcial, etc.
+            [(k, v) for k, v, kc, _ in entries if kc.startswith(qc)],
+            [(k, v) for k, v, kc, sc in entries if qc in kc or (sc and qc in sc)],
+        ]
+        for tier in tiers:
+            if tier:
+                return sorted(tier, key=sort_key)
         # Último recurso: todas las palabras presentes (en cualquier orden)
         tokens = q.split(" ")
-        loose = [(k, v) for k, v in index.items() if all(t in f"{k} {normalize(v.get('nombre'))}".split(" ") for t in tokens)]
+        loose = [
+            (k, v) for k, v in index.items()
+            if all(t in f"{k} {normalize(v.get('sku'))} {normalize(v.get('nombre'))} {normalize(v.get('color'))}" for t in tokens)
+        ]
         return sorted(loose, key=sort_key)
 
     def answer(self, query: str) -> str:
@@ -104,7 +128,7 @@ class StockLookup:
         shown = html.escape(query.strip().upper())
         matches = self.find(query)
         if not matches:
-            return f"🔎 No encontré el código <b>{shown}</b> en la planilla."
+            return f"❌ <b>{shown}</b>: no hay stock en {BASE}."
 
         in_stock = [(k, v) for k, v in matches if float(v.get("bases", {}).get(BASE, 0) or 0) > 0]
         if not in_stock:
@@ -190,6 +214,7 @@ class TelegramBot:
             return
 
         answer = self.lookup.answer(text)
+        self.log(f"[telegram] consulta '{text}' de {chat_id} -> {answer.splitlines()[0][:80]}")
         self.send(chat_id, answer, reply_to=message.get("message_id"))
 
     def run(self) -> None:

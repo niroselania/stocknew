@@ -14,7 +14,7 @@ import time
 from stock_processor import build_stock_payload, compare_inventories, make_history_id
 from telegram_bot import start_bot
 
-VERSION = "3.1.0"
+VERSION = "3.1.1"
 TELEGRAM_BOT = None
 
 APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
