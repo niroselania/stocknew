@@ -12,10 +12,10 @@ import threading
 import time
 
 from stock_processor import build_stock_payload, compare_inventories, make_history_id
-from telegram_bot import start_bot
+from telegram_bot import start_bots
 
 VERSION = "3.1.1"
-TELEGRAM_BOT = None
+TELEGRAM_BOTS: dict = {}
 
 APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -156,9 +156,11 @@ class StockHandler(BaseHTTPRequestHandler):
             return self.send_file(APP_DIR / filename, content_type, revalidate=True)
 
         if path == "/api/health":
-            telegram = dict(TELEGRAM_BOT.status) if TELEGRAM_BOT else {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN vacío o no llegó al contenedor"}
-            if TELEGRAM_BOT:
-                telegram["products"] = len(TELEGRAM_BOT.lookup.index())
+            bots = {}
+            for name, bot in TELEGRAM_BOTS.items():
+                bots[name] = dict(bot.status, products=len(bot.lookup.index()))
+            telegram = next(iter(bots.values())) if bots else {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN vacío o no llegó al contenedor"}
+            telegram = dict(telegram, bots=bots)
             return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists(), "version": VERSION, "telegram": telegram})
 
         if path == "/api/version":
@@ -169,7 +171,7 @@ class StockHandler(BaseHTTPRequestHandler):
                     "authRequired": bool(UPLOAD_TOKEN),
                     "historyMax": HISTORY_MAX,
                     "features": ["history", "compare", "stock-data", "preprocess", "gzip", "etag", "delete", "download", "price", "telegram"],
-                    "telegram": bool(TELEGRAM_BOT and TELEGRAM_BOT.status.get("enabled")),
+                    "telegram": any(b.status.get("enabled") for b in TELEGRAM_BOTS.values()),
                 }
             )
 
@@ -439,8 +441,8 @@ if __name__ == "__main__":
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ensure_processed_stock()
-    TELEGRAM_BOT = start_bot(DATA_FILE)
-    if TELEGRAM_BOT is None:
+    TELEGRAM_BOTS = start_bots(DATA_FILE)
+    if not TELEGRAM_BOTS:
         print("Bot de Telegram DESACTIVADO: el contenedor no recibió TELEGRAM_BOT_TOKEN. En Portainer cargalo en Stack > Environment variables y hacé Update/Redeploy.", flush=True)
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StockHandler)

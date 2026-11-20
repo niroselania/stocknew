@@ -118,3 +118,13 @@ SI EL BOT NO RESPONDE (v3.1.2)
 2. No uses el mismo token en dos contenedores (error 409).
 3. En grupos, escribí /stock CODIGO (Telegram no entrega texto común a bots con privacidad activa).
 4. IMPORTANTE: subí a GitHub TODOS los archivos (incluido telegram_bot.py, Dockerfile y docker-compose.yml nuevos).
+
+SEGUNDO BOT PARA BARILOCHE (v3.1.4)
+Un solo contenedor puede correr dos bots. El bot de siempre consulta LOCAL; el segundo consulta BARI.
+Los dos usan la misma planilla y el mismo precio (RETAIL).
+1. En @BotFather creá otro bot (/newbot) y copiá su token (distinto al del bot LOCAL).
+2. En Portainer > Stack > Environment variables agregá:
+     TELEGRAM_BOT_TOKEN_BARI      = token-del-bot-bari
+     TELEGRAM_ALLOWED_CHATS_BARI  = ids permitidos (si lo dejás vacío usa TELEGRAM_ALLOWED_CHATS)
+3. Update the stack con redeploy. Escribile /id al bot nuevo para sacar el id de su chat o grupo.
+4. /api/health muestra "telegram": {"bots": {"LOCAL": {...}, "BARI": {...}}}.
