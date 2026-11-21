@@ -209,7 +209,15 @@ class TelegramBot:
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else ""
 
         if command == "/id":
-            self.send(chat_id, f"🆔 El id de este chat es <code>{chat_id}</code>")
+            sender = message.get("from") or {}
+            target = (message.get("reply_to_message") or {}).get("from") or sender
+            name = html.escape(" ".join(filter(None, [target.get("first_name"), target.get("last_name")])) or "usuario")
+            user = f" (@{html.escape(target['username'])})" if target.get("username") else ""
+            lines = []
+            if message["chat"].get("type") != "private":
+                lines.append(f"👥 Id de este grupo: <code>{chat_id}</code>")
+            lines.append(f"👤 Id de {name}{user}: <code>{target.get('id')}</code>")
+            self.send(chat_id, "\n".join(lines), reply_to=message.get("message_id"))
             return
         if self.allowed and chat_id not in self.allowed:
             self.log(f"[telegram] chat no autorizado {chat_id} ({message['chat'].get('username') or message['chat'].get('title') or ''})")
