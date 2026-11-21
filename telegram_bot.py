@@ -7,9 +7,6 @@ Variables de entorno:
   TELEGRAM_BOT_TOKEN      token que da @BotFather (obligatorio para activarlo)
   TELEGRAM_ALLOWED_CHATS  ids de chat permitidos separados por coma (recomendado)
   TELEGRAM_BASE           base a consultar (default LOCAL)
-  TELEGRAM_BOT_TOKEN_BARI        (opcional) segundo bot que consulta la base BARI
-  TELEGRAM_ALLOWED_CHATS_BARI    chats permitidos del bot BARI (si falta, usa TELEGRAM_ALLOWED_CHATS)
-  TELEGRAM_BASE_BARI             base del segundo bot (default BARI)
   TELEGRAM_MAX_ITEMS      máximo de variantes por respuesta (default 40)
 """
 from __future__ import annotations
@@ -34,6 +31,7 @@ def env(name: str, default: str = "") -> str:
 
 
 API_BASE = env("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+BASE = normalize(env("TELEGRAM_BASE", "LOCAL")) or "LOCAL"
 MAX_ITEMS = int(env("TELEGRAM_MAX_ITEMS", "40") or 40)
 
 HELP_TEXT = (
@@ -77,9 +75,8 @@ def sort_key(item: tuple[str, dict]) -> tuple:
 class StockLookup:
     """Lee el JSON procesado del servidor y lo recarga cuando cambia la planilla."""
 
-    def __init__(self, data_file: Path, base: str = "LOCAL"):
+    def __init__(self, data_file: Path):
         self.data_file = data_file
-        self.base = base
         self._mtime = None
         self._index: dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -132,7 +129,6 @@ class StockLookup:
         return sorted(loose, key=sort_key)
 
     def answer(self, query: str) -> str:
-        BASE = self.base
         if not self.index():
             return "⚠️ Todavía no hay una planilla cargada en el sistema."
         shown = html.escape(query.strip().upper())
@@ -170,7 +166,6 @@ class StockLookup:
 
 class TelegramBot:
     def __init__(self, token: str, lookup: StockLookup, allowed: set[int], log: Callable[[str], None] = print):
-        self.base = lookup.base
         self.token = token
         self.lookup = lookup
         self.allowed = allowed
@@ -178,7 +173,7 @@ class TelegramBot:
         self.offset = 0
         self.status: dict[str, Any] = {
             "enabled": True, "connected": False, "username": None, "lastError": None,
-            "base": lookup.base, "allowedChats": len(allowed), "lastMessageAt": None,
+            "base": BASE, "allowedChats": len(allowed), "lastMessageAt": None,
         }
 
     # --- API ---
@@ -209,17 +204,23 @@ class TelegramBot:
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else ""
 
         if command == "/id":
-            self.send(chat_id, f"🆔 El id de este chat es <code>{chat_id}</code>")
+            sender = message.get("from") or {}
+            target = (message.get("reply_to_message") or {}).get("from") or sender
+            name = html.escape(" ".join(filter(None, [target.get("first_name"), target.get("last_name")])) or "usuario")
+            user = f" (@{html.escape(target['username'])})" if target.get("username") else ""
+            lines = []
+            if message["chat"].get("type") != "private":
+                lines.append(f"👥 Id de este grupo: <code>{chat_id}</code>")
+            lines.append(f"👤 Id de {name}{user}: <code>{target.get('id')}</code>")
+            self.send(chat_id, "\n".join(lines), reply_to=message.get("message_id"))
             return
         if self.allowed and chat_id not in self.allowed:
             self.log(f"[telegram] chat no autorizado {chat_id} ({message['chat'].get('username') or message['chat'].get('title') or ''})")
-            if command or message["chat"].get("type") == "private":  # en grupos sin autorizar no spameo
-                self.send(chat_id, f"⛔ Este chat no está autorizado.\nPasale este id al administrador: <code>{chat_id}</code>")
+            self.send(chat_id, f"⛔ Este chat no está autorizado.\nPasale este id al administrador: <code>{chat_id}</code>")
             return
         if command in ("/start", "/ayuda", "/help"):
-            self.send(chat_id, HELP_TEXT.format(base=self.base))
+            self.send(chat_id, HELP_TEXT.format(base=BASE))
             return
-        command_given = command in ("/stock", "/s", "/buscar")
         if command in ("/stock", "/s", "/buscar"):
             text = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
             if not text:
@@ -230,12 +231,6 @@ class TelegramBot:
             return
 
         self.status["lastMessageAt"] = int(time.time())
-        in_group = message["chat"].get("type") in ("group", "supergroup")
-        if in_group and not command_given and (len(text) > 60 or len(text.split()) > 4):
-            return  # charla común del grupo: no es un código, no contesto
-        if in_group and not command_given and not self.lookup.find(text):
-            self.log(f"[telegram] grupo {chat_id}: '{text[:40]}' no es un código, lo ignoro")
-            return  # en grupos no contesto a mensajes que no son códigos
         answer = self.lookup.answer(text)
         self.log(f"[telegram] consulta '{text}' de {chat_id} -> {answer.splitlines()[0][:80]}")
         self.send(chat_id, answer, reply_to=message.get("message_id"))
@@ -249,14 +244,14 @@ class TelegramBot:
                     self.call("deleteWebhook", {"drop_pending_updates": False})
                     try:
                         self.call("setMyCommands", {"commands": [
-                            {"command": "stock", "description": f"Consultar stock en {self.base}"},
+                            {"command": "stock", "description": f"Consultar stock en {BASE}"},
                             {"command": "ayuda", "description": "Cómo usar el bot"},
                             {"command": "id", "description": "Ver el id de este chat"},
                         ]})
                     except Exception:
                         pass
                     self.status.update(connected=True, username=me.get("username"), lastError=None)
-                    self.log(f"[telegram:{self.base}] bot @{me.get('username')} conectado · base {self.base}"
+                    self.log(f"[telegram] bot @{me.get('username')} conectado · base {BASE}"
                              + (f" · {len(self.allowed)} chat(s) autorizados" if self.allowed else " · SIN lista de chats (cualquiera puede consultar)"))
                 updates = self.call("getUpdates", {"offset": self.offset, "timeout": 50, "allowed_updates": ["message"]}, timeout=65)
                 backoff = 2
@@ -289,37 +284,17 @@ class TelegramBot:
                 backoff = min(backoff * 2, 60)
 
 
-def _parse_chats(raw: str) -> set[int]:
+def start_bot(data_file: Path) -> TelegramBot | None:
+    token = env("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return None
     allowed = set()
-    for part in re.split(r"[,; \n]+", raw):
+    for part in re.split(r"[,; \n]+", env("TELEGRAM_ALLOWED_CHATS")):
         part = part.strip().strip("\"'")
         if part.lstrip("-").isdigit():
             allowed.add(int(part))
-    return allowed
-
-
-def start_bots(data_file: Path) -> dict[str, TelegramBot]:
-    """Arranca un bot por cada token definido. Cada uno consulta su propia base (mismos datos y mismo precio)."""
-    specs = [
-        # (variable del token, variable de chats, variable de base, base por defecto)
-        ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHATS", "TELEGRAM_BASE", "LOCAL"),
-        ("TELEGRAM_BOT_TOKEN_BARI", "TELEGRAM_ALLOWED_CHATS_BARI", "TELEGRAM_BASE_BARI", "BARI"),
-    ]
-    bots: dict[str, TelegramBot] = {}
-    tokens_seen: dict[str, str] = {}
-    for token_var, chats_var, base_var, default_base in specs:
-        token = env(token_var)
-        if not token:
-            continue
-        base = normalize(env(base_var, default_base)) or default_base
-        if token in tokens_seen:
-            print(f"[telegram] {token_var} repite el token de {tokens_seen[token]}: cada bot necesita su propio token (@BotFather). Lo ignoro.", flush=True)
-            continue
-        tokens_seen[token] = token_var
-        allowed = _parse_chats(env(chats_var) or env("TELEGRAM_ALLOWED_CHATS"))
-        if ":" not in token:
-            print(f"[telegram] OJO: el token de {token_var} no tiene el formato 123456789:AAxxxx.", flush=True)
-        bot = TelegramBot(token, StockLookup(data_file, base), allowed, log=lambda m: print(m, flush=True))
-        threading.Thread(target=bot.run, name=f"telegram-bot-{base}", daemon=True).start()
-        bots[base] = bot
-    return bots
+    if ":" not in token:
+        print("[telegram] OJO: el token no tiene el formato 123456789:AAxxxx. Revisá TELEGRAM_BOT_TOKEN.", flush=True)
+    bot = TelegramBot(token, StockLookup(data_file), allowed, log=lambda m: print(m, flush=True))
+    threading.Thread(target=bot.run, name="telegram-bot", daemon=True).start()
+    return bot
