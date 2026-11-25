@@ -12,10 +12,10 @@ import threading
 import time
 
 from stock_processor import build_stock_payload, compare_inventories, make_history_id
-from telegram_bot import start_bots
+from telegram_bot import start_bot
 
-VERSION = "3.1.1"
-TELEGRAM_BOTS: dict = {}
+VERSION = "3.2.0"
+TELEGRAM_BOT = None
 
 APP_DIR = Path(os.environ.get("APP_DIR", "/app"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -134,6 +134,34 @@ def process_upload(stock_path: Path, original_name: str, uploaded_at: int | None
     return meta
 
 
+class UploadBusy(Exception):
+    """Ya hay otra planilla procesándose."""
+
+
+def ingest_stock_file(upload_file: Path, original_name: str, source: str = "web") -> dict:
+    """Procesa una planilla ya guardada en disco y la deja como planilla actual.
+
+    La usan la web (/api/upload) y el bot de Telegram, así las dos vías hacen
+    exactamente lo mismo (historial, datos para la web y para el bot).
+    Si falla, borra el archivo temporal y relanza el error.
+    """
+    if not PROCESS_LOCK.acquire(timeout=240):
+        if upload_file.exists():
+            upload_file.unlink()
+        raise UploadBusy("Hay otra planilla procesándose. Probá en un minuto.")
+    try:
+        meta = process_upload(upload_file, original_name)
+        upload_file.replace(STOCK_FILE)
+        print(f"Planilla cargada ({source}): {meta['name']} ({meta['productCount']} productos, {meta['processSeconds']}s) · precio: {meta.get('priceColumn') or 'NO ENCONTRÉ columna RETAIL'}", flush=True)
+        return meta
+    except Exception:
+        if upload_file.exists():
+            upload_file.unlink()
+        raise
+    finally:
+        PROCESS_LOCK.release()
+
+
 def load_inventory(history_id: str):
     snapshot = read_json(HISTORY_DIR / f"{history_id}.json")
     return snapshot.get("inventory") if snapshot else None
@@ -156,11 +184,9 @@ class StockHandler(BaseHTTPRequestHandler):
             return self.send_file(APP_DIR / filename, content_type, revalidate=True)
 
         if path == "/api/health":
-            bots = {}
-            for name, bot in TELEGRAM_BOTS.items():
-                bots[name] = dict(bot.status, products=len(bot.lookup.index()))
-            telegram = next(iter(bots.values())) if bots else {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN vacío o no llegó al contenedor"}
-            telegram = dict(telegram, bots=bots)
+            telegram = dict(TELEGRAM_BOT.status) if TELEGRAM_BOT else {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN vacío o no llegó al contenedor"}
+            if TELEGRAM_BOT:
+                telegram["products"] = len(TELEGRAM_BOT.lookup.index())
             return self.send_json({"ok": True, "hasStock": STOCK_FILE.exists(), "version": VERSION, "telegram": telegram})
 
         if path == "/api/version":
@@ -170,8 +196,8 @@ class StockHandler(BaseHTTPRequestHandler):
                     "uploadFix": True,
                     "authRequired": bool(UPLOAD_TOKEN),
                     "historyMax": HISTORY_MAX,
-                    "features": ["history", "compare", "stock-data", "preprocess", "gzip", "etag", "delete", "download", "price", "telegram"],
-                    "telegram": any(b.status.get("enabled") for b in TELEGRAM_BOTS.values()),
+                    "features": ["history", "compare", "stock-data", "preprocess", "gzip", "etag", "delete", "download", "price", "telegram", "telegram-upload"],
+                    "telegram": bool(TELEGRAM_BOT and TELEGRAM_BOT.status.get("enabled")),
                 }
             )
 
@@ -288,22 +314,19 @@ class StockHandler(BaseHTTPRequestHandler):
         if not field.filename.lower().endswith(".xlsx"):
             return self.send_text("El archivo debe ser .xlsx", status=400)
 
-        if not PROCESS_LOCK.acquire(timeout=240):
-            return self.send_text("Hay otra planilla procesándose. Probá en un minuto.", status=409)
-        upload_file = DATA_DIR / "stock-upload.xlsx"
+        # Nombre único: la web y el bot pueden recibir planillas al mismo tiempo.
+        upload_file = DATA_DIR / f"stock-upload-web-{time.time_ns()}.xlsx"
         try:
             with upload_file.open("wb") as output:
                 shutil.copyfileobj(field.file, output)
-            meta = process_upload(upload_file, Path(field.filename).name)
-            upload_file.replace(STOCK_FILE)
-            print(f"Planilla cargada: {meta['name']} ({meta['productCount']} productos, {meta['processSeconds']}s) · precio: {meta.get('priceColumn') or 'NO ENCONTRÉ columna RETAIL'}", flush=True)
+            meta = ingest_stock_file(upload_file, Path(field.filename).name, source="web")
             self.send_json(meta)
+        except UploadBusy as error:
+            self.send_text(str(error), status=409)
         except Exception as error:
             if upload_file.exists():
                 upload_file.unlink()
             self.send_text(f"No pude procesar la planilla: {error}", status=400)
-        finally:
-            PROCESS_LOCK.release()
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
@@ -441,8 +464,8 @@ if __name__ == "__main__":
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ensure_processed_stock()
-    TELEGRAM_BOTS = start_bots(DATA_FILE)
-    if not TELEGRAM_BOTS:
+    TELEGRAM_BOT = start_bot(DATA_FILE, upload_handler=ingest_stock_file)
+    if TELEGRAM_BOT is None:
         print("Bot de Telegram DESACTIVADO: el contenedor no recibió TELEGRAM_BOT_TOKEN. En Portainer cargalo en Stack > Environment variables y hacé Update/Redeploy.", flush=True)
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), StockHandler)

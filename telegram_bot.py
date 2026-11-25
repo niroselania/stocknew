@@ -7,10 +7,10 @@ Variables de entorno:
   TELEGRAM_BOT_TOKEN      token que da @BotFather (obligatorio para activarlo)
   TELEGRAM_ALLOWED_CHATS  ids de chat permitidos separados por coma (recomendado)
   TELEGRAM_BASE           base a consultar (default LOCAL)
-  TELEGRAM_BOT_TOKEN_BARI        (opcional) segundo bot que consulta la base BARI
-  TELEGRAM_ALLOWED_CHATS_BARI    chats permitidos del bot BARI (si falta, usa TELEGRAM_ALLOWED_CHATS)
-  TELEGRAM_BASE_BARI             base del segundo bot (default BARI)
   TELEGRAM_MAX_ITEMS      máximo de variantes por respuesta (default 40)
+  TELEGRAM_UPLOAD_CHATS   ids (de chat o de usuario) que pueden SUBIR la planilla
+                          mandándole el .xlsx al bot. Vacío = el bot no acepta planillas.
+  TELEGRAM_MAX_FILE_MB    tamaño máximo de planilla por Telegram (default 20, límite de Telegram)
 """
 from __future__ import annotations
 
@@ -34,7 +34,10 @@ def env(name: str, default: str = "") -> str:
 
 
 API_BASE = env("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+BASE = normalize(env("TELEGRAM_BASE", "LOCAL")) or "LOCAL"
 MAX_ITEMS = int(env("TELEGRAM_MAX_ITEMS", "40") or 40)
+# La API pública de bots sólo deja descargar archivos de hasta 20 MB.
+MAX_FILE_BYTES = int(float(env("TELEGRAM_MAX_FILE_MB", "20") or 20) * 1024 * 1024)
 
 HELP_TEXT = (
     "📦 <b>Consulta de stock · {base}</b>\n\n"
@@ -44,6 +47,12 @@ HELP_TEXT = (
     "• <code>25551 NLSA M</code> → color y talle\n\n"
     "Te respondo código, color, talle, cantidad y precio. "
     "Si no hay unidades en {base}, te aviso que no hay stock."
+)
+
+HELP_UPLOAD = (
+    "\n\n📤 <b>Subir planilla</b>\n"
+    "Mandame el archivo <code>.xlsx</code> como documento (clip 📎 → Archivo) y "
+    "queda como planilla actual, igual que si la subieras por la web."
 )
 
 
@@ -77,9 +86,8 @@ def sort_key(item: tuple[str, dict]) -> tuple:
 class StockLookup:
     """Lee el JSON procesado del servidor y lo recarga cuando cambia la planilla."""
 
-    def __init__(self, data_file: Path, base: str = "LOCAL"):
+    def __init__(self, data_file: Path):
         self.data_file = data_file
-        self.base = base
         self._mtime = None
         self._index: dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -132,7 +140,6 @@ class StockLookup:
         return sorted(loose, key=sort_key)
 
     def answer(self, query: str) -> str:
-        BASE = self.base
         if not self.index():
             return "⚠️ Todavía no hay una planilla cargada en el sistema."
         shown = html.escape(query.strip().upper())
@@ -168,18 +175,45 @@ class StockLookup:
         return "\n".join(lines) + footer
 
 
+UploadHandler = Callable[[Path, str, str], dict]
+
+
 class TelegramBot:
-    def __init__(self, token: str, lookup: StockLookup, allowed: set[int], log: Callable[[str], None] = print):
-        self.base = lookup.base
+    def __init__(
+        self,
+        token: str,
+        lookup: StockLookup,
+        allowed: set[int],
+        log: Callable[[str], None] = print,
+        upload_chats: set[int] | None = None,
+        upload_handler: UploadHandler | None = None,
+        upload_dir: Path | None = None,
+    ):
         self.token = token
         self.lookup = lookup
         self.allowed = allowed
         self.log = log
+        self.upload_chats = upload_chats or set()
+        self.upload_handler = upload_handler
+        self.upload_dir = upload_dir or lookup.data_file.parent
         self.offset = 0
         self.status: dict[str, Any] = {
             "enabled": True, "connected": False, "username": None, "lastError": None,
-            "base": lookup.base, "allowedChats": len(allowed), "lastMessageAt": None,
+            "base": BASE, "allowedChats": len(allowed), "lastMessageAt": None,
+            "uploadEnabled": self.upload_enabled, "uploadChats": len(self.upload_chats),
+            "lastUpload": None,
         }
+
+    @property
+    def upload_enabled(self) -> bool:
+        return bool(self.upload_handler and self.upload_chats)
+
+    def can_upload(self, message: dict) -> bool:
+        """Puede subir si el chat o el usuario que escribe está en TELEGRAM_UPLOAD_CHATS."""
+        if not self.upload_enabled:
+            return False
+        user_id = (message.get("from") or {}).get("id")
+        return message["chat"]["id"] in self.upload_chats or user_id in self.upload_chats
 
     # --- API ---
     def call(self, method: str, payload: dict | None = None, timeout: float = 30) -> Any:
@@ -200,34 +234,115 @@ class TelegramBot:
             payload["allow_sending_without_reply"] = True
         self.call("sendMessage", payload)
 
+    def download(self, file_id: str, target: Path) -> None:
+        info = self.call("getFile", {"file_id": file_id})
+        file_path = info.get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram no devolvió el archivo")
+        url = f"{API_BASE}/file/bot{self.token}/{file_path}"
+        with urllib.request.urlopen(url, timeout=120) as response, target.open("wb") as output:
+            total = 0
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_FILE_BYTES:
+                    raise RuntimeError("la planilla supera el límite permitido")
+                output.write(chunk)
+
+    # --- subida de planilla ---
+    def handle_document(self, message: dict) -> None:
+        chat_id = message["chat"]["id"]
+        reply_to = message.get("message_id")
+        document = message["document"]
+        name = Path(document.get("file_name") or "planilla.xlsx").name
+        who = (message.get("from") or {}).get("username") or (message.get("from") or {}).get("id")
+
+        if not self.upload_enabled:
+            self.send(chat_id, "📎 Este bot sólo consulta stock; la planilla se sube por la web.", reply_to)
+            return
+        if not self.can_upload(message):
+            self.log(f"[telegram] intento de subir '{name}' sin permiso desde chat {chat_id} (usuario {who})")
+            self.send(chat_id, "⛔ No tenés permiso para subir planillas desde Telegram.", reply_to)
+            return
+        if not name.lower().endswith(".xlsx"):
+            self.send(chat_id, "El archivo debe ser una planilla <code>.xlsx</code>.", reply_to)
+            return
+        size = int(document.get("file_size") or 0)
+        if size > MAX_FILE_BYTES:
+            self.send(chat_id, f"⚠️ La planilla pesa {size / 1048576:.1f} MB y por Telegram el máximo es "
+                               f"{MAX_FILE_BYTES / 1048576:.0f} MB. Subila por la web.", reply_to)
+            return
+
+        self.send(chat_id, f"⏳ Recibí <b>{html.escape(name)}</b>, procesando…", reply_to)
+        # En otro hilo: mientras se procesa, el bot sigue respondiendo consultas.
+        threading.Thread(
+            target=self._process_upload, args=(message, name, who), name="telegram-upload", daemon=True
+        ).start()
+
+    def _process_upload(self, message: dict, name: str, who: Any) -> None:
+        chat_id = message["chat"]["id"]
+        reply_to = message.get("message_id")
+        target = self.upload_dir / f"stock-upload-telegram-{time.time_ns()}.xlsx"
+        try:
+            self.upload_dir.mkdir(parents=True, exist_ok=True)
+            self.download(message["document"]["file_id"], target)
+            meta = self.upload_handler(target, name, f"telegram {who}")
+        except Exception as error:
+            if target.exists():
+                target.unlink()
+            self.log(f"[telegram] no pude procesar '{name}' de {who}: {error}")
+            try:
+                self.send(chat_id, f"❌ No pude procesar <b>{html.escape(name)}</b>: {html.escape(str(error))}", reply_to)
+            except Exception:
+                pass
+            return
+
+        self.status["lastUpload"] = {"name": meta.get("name"), "at": meta.get("uploadedAt"), "by": str(who)}
+        units = float((meta.get("totals") or {}).get(BASE, 0) or 0)
+        price = meta.get("priceColumn")
+        text = (
+            f"✅ Planilla <b>{html.escape(str(meta.get('name')))}</b> cargada.\n"
+            f"• {fmt_number(float(meta.get('productCount') or 0))} productos\n"
+            f"• {fmt_number(units)} u en {BASE}\n"
+            f"• Precio: {html.escape(str(price)) if price else '⚠️ no encontré la columna RETAIL'}\n"
+            f"• Procesada en {meta.get('processSeconds')} s\n\n"
+            "Ya se ve en la web y en las consultas del bot."
+        )
+        try:
+            self.send(chat_id, text, reply_to)
+        except Exception as error:
+            self.log(f"[telegram] planilla cargada pero no pude avisar: {error}")
+
     # --- lógica ---
     def handle(self, message: dict) -> None:
         chat_id = message["chat"]["id"]
+        if message.get("document"):
+            # El permiso de subida alcanza aunque el chat no esté en TELEGRAM_ALLOWED_CHATS.
+            if self.allowed and chat_id not in self.allowed and not self.can_upload(message):
+                self.send(chat_id, f"⛔ Este chat no está autorizado.\nPasale este id al administrador: <code>{chat_id}</code>")
+                return
+            self.handle_document(message)
+            return
         text = (message.get("text") or "").strip()
         if not text:
             return
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else ""
 
         if command == "/id":
-            sender = message.get("from") or {}
-            target = (message.get("reply_to_message") or {}).get("from") or sender
-            name = html.escape(" ".join(filter(None, [target.get("first_name"), target.get("last_name")])) or "usuario")
-            user = f" (@{html.escape(target['username'])})" if target.get("username") else ""
-            lines = []
-            if message["chat"].get("type") != "private":
-                lines.append(f"👥 Id de este grupo: <code>{chat_id}</code>")
-            lines.append(f"👤 Id de {name}{user}: <code>{target.get('id')}</code>")
-            self.send(chat_id, "\n".join(lines), reply_to=message.get("message_id"))
+            self.send(chat_id, f"🆔 El id de este chat es <code>{chat_id}</code>")
             return
-        if self.allowed and chat_id not in self.allowed:
+        if self.allowed and chat_id not in self.allowed and not self.can_upload(message):
             self.log(f"[telegram] chat no autorizado {chat_id} ({message['chat'].get('username') or message['chat'].get('title') or ''})")
-            if command or message["chat"].get("type") == "private":  # en grupos sin autorizar no spameo
-                self.send(chat_id, f"⛔ Este chat no está autorizado.\nPasale este id al administrador: <code>{chat_id}</code>")
+            self.send(chat_id, f"⛔ Este chat no está autorizado.\nPasale este id al administrador: <code>{chat_id}</code>")
             return
         if command in ("/start", "/ayuda", "/help"):
-            self.send(chat_id, HELP_TEXT.format(base=self.base))
+            self.send(chat_id, HELP_TEXT.format(base=BASE) + (HELP_UPLOAD if self.can_upload(message) else ""))
             return
-        command_given = command in ("/stock", "/s", "/buscar")
+        if command in ("/subir", "/planilla"):
+            if self.can_upload(message):
+                self.send(chat_id, HELP_UPLOAD.strip())
+            else:
+                self.send(chat_id, "⛔ No tenés permiso para subir planillas desde Telegram.")
+            return
         if command in ("/stock", "/s", "/buscar"):
             text = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
             if not text:
@@ -238,12 +353,6 @@ class TelegramBot:
             return
 
         self.status["lastMessageAt"] = int(time.time())
-        in_group = message["chat"].get("type") in ("group", "supergroup")
-        if in_group and not command_given and (len(text) > 60 or len(text.split()) > 4):
-            return  # charla común del grupo: no es un código, no contesto
-        if in_group and not command_given and not self.lookup.find(text):
-            self.log(f"[telegram] grupo {chat_id}: '{text[:40]}' no es un código, lo ignoro")
-            return  # en grupos no contesto a mensajes que no son códigos
         answer = self.lookup.answer(text)
         self.log(f"[telegram] consulta '{text}' de {chat_id} -> {answer.splitlines()[0][:80]}")
         self.send(chat_id, answer, reply_to=message.get("message_id"))
@@ -256,16 +365,20 @@ class TelegramBot:
                     me = self.call("getMe")
                     self.call("deleteWebhook", {"drop_pending_updates": False})
                     try:
-                        self.call("setMyCommands", {"commands": [
-                            {"command": "stock", "description": f"Consultar stock en {self.base}"},
+                        commands = [
+                            {"command": "stock", "description": f"Consultar stock en {BASE}"},
                             {"command": "ayuda", "description": "Cómo usar el bot"},
                             {"command": "id", "description": "Ver el id de este chat"},
-                        ]})
+                        ]
+                        if self.upload_enabled:
+                            commands.insert(1, {"command": "subir", "description": "Cómo subir la planilla"})
+                        self.call("setMyCommands", {"commands": commands})
                     except Exception:
                         pass
                     self.status.update(connected=True, username=me.get("username"), lastError=None)
-                    self.log(f"[telegram:{self.base}] bot @{me.get('username')} conectado · base {self.base}"
-                             + (f" · {len(self.allowed)} chat(s) autorizados" if self.allowed else " · SIN lista de chats (cualquiera puede consultar)"))
+                    self.log(f"[telegram] bot @{me.get('username')} conectado · base {BASE}"
+                             + (f" · {len(self.allowed)} chat(s) autorizados" if self.allowed else " · SIN lista de chats (cualquiera puede consultar)")
+                             + (f" · subida de planillas habilitada para {len(self.upload_chats)} id(s)" if self.upload_enabled else " · subida de planillas desactivada"))
                 updates = self.call("getUpdates", {"offset": self.offset, "timeout": 50, "allowed_updates": ["message"]}, timeout=65)
                 backoff = 2
                 for update in updates:
@@ -297,37 +410,26 @@ class TelegramBot:
                 backoff = min(backoff * 2, 60)
 
 
-def _parse_chats(raw: str) -> set[int]:
-    allowed = set()
-    for part in re.split(r"[,; \n]+", raw):
+def parse_ids(value: str) -> set[int]:
+    ids = set()
+    for part in re.split(r"[,; \n]+", value):
         part = part.strip().strip("\"'")
         if part.lstrip("-").isdigit():
-            allowed.add(int(part))
-    return allowed
+            ids.add(int(part))
+    return ids
 
 
-def start_bots(data_file: Path) -> dict[str, TelegramBot]:
-    """Arranca un bot por cada token definido. Cada uno consulta su propia base (mismos datos y mismo precio)."""
-    specs = [
-        # (variable del token, variable de chats, variable de base, base por defecto)
-        ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHATS", "TELEGRAM_BASE", "LOCAL"),
-        ("TELEGRAM_BOT_TOKEN_BARI", "TELEGRAM_ALLOWED_CHATS_BARI", "TELEGRAM_BASE_BARI", "BARI"),
-    ]
-    bots: dict[str, TelegramBot] = {}
-    tokens_seen: dict[str, str] = {}
-    for token_var, chats_var, base_var, default_base in specs:
-        token = env(token_var)
-        if not token:
-            continue
-        base = normalize(env(base_var, default_base)) or default_base
-        if token in tokens_seen:
-            print(f"[telegram] {token_var} repite el token de {tokens_seen[token]}: cada bot necesita su propio token (@BotFather). Lo ignoro.", flush=True)
-            continue
-        tokens_seen[token] = token_var
-        allowed = _parse_chats(env(chats_var) or env("TELEGRAM_ALLOWED_CHATS"))
-        if ":" not in token:
-            print(f"[telegram] OJO: el token de {token_var} no tiene el formato 123456789:AAxxxx.", flush=True)
-        bot = TelegramBot(token, StockLookup(data_file, base), allowed, log=lambda m: print(m, flush=True))
-        threading.Thread(target=bot.run, name=f"telegram-bot-{base}", daemon=True).start()
-        bots[base] = bot
-    return bots
+def start_bot(data_file: Path, upload_handler: UploadHandler | None = None) -> TelegramBot | None:
+    token = env("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return None
+    allowed = parse_ids(env("TELEGRAM_ALLOWED_CHATS"))
+    upload_chats = parse_ids(env("TELEGRAM_UPLOAD_CHATS"))
+    if ":" not in token:
+        print("[telegram] OJO: el token no tiene el formato 123456789:AAxxxx. Revisá TELEGRAM_BOT_TOKEN.", flush=True)
+    bot = TelegramBot(
+        token, StockLookup(data_file), allowed, log=lambda m: print(m, flush=True),
+        upload_chats=upload_chats, upload_handler=upload_handler,
+    )
+    threading.Thread(target=bot.run, name="telegram-bot", daemon=True).start()
+    return bot

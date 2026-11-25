@@ -1,4 +1,4 @@
-Buscador de stock v3.1.1 - Portainer
+Buscador de stock v3.2.0 - Portainer
 
 Archivos principales:
 - stock-buscador.html + app.js: interfaz (centro de control, tema oscuro/claro).
@@ -119,12 +119,29 @@ SI EL BOT NO RESPONDE (v3.1.2)
 3. En grupos, escribí /stock CODIGO (Telegram no entrega texto común a bots con privacidad activa).
 4. IMPORTANTE: subí a GitHub TODOS los archivos (incluido telegram_bot.py, Dockerfile y docker-compose.yml nuevos).
 
-SEGUNDO BOT PARA BARILOCHE (v3.1.4)
-Un solo contenedor puede correr dos bots. El bot de siempre consulta LOCAL; el segundo consulta BARI.
-Los dos usan la misma planilla y el mismo precio (RETAIL).
-1. En @BotFather creá otro bot (/newbot) y copiá su token (distinto al del bot LOCAL).
-2. En Portainer > Stack > Environment variables agregá:
-     TELEGRAM_BOT_TOKEN_BARI      = token-del-bot-bari
-     TELEGRAM_ALLOWED_CHATS_BARI  = ids permitidos (si lo dejás vacío usa TELEGRAM_ALLOWED_CHATS)
-3. Update the stack con redeploy. Escribile /id al bot nuevo para sacar el id de su chat o grupo.
-4. /api/health muestra "telegram": {"bots": {"LOCAL": {...}, "BARI": {...}}}.
+SUBIR LA PLANILLA DESDE TELEGRAM (v3.2.0)
+Además de la web (que sigue igual), se puede subir la planilla mandándole el
+archivo .xlsx al bot. Queda como planilla actual, entra en el historial y se ve
+en la web igual que si se hubiera subido desde ahí.
+
+Activarlo (sólo en el bot/stack donde lo quieras):
+1. Escribile /id al bot desde tu chat privado con él.
+2. En Portainer > Stacks > tu stack > Environment variables agregá:
+     TELEGRAM_UPLOAD_CHATS = 123456789
+   (tu id; varios separados por coma. Puede ser el id de un chat o de una persona.)
+   Redeploy.
+3. Mandale al bot el .xlsx como documento (clip > Archivo, no como foto).
+   Responde "procesando..." y después un resumen: productos, unidades en la
+   base del bot y columna de precio usada.
+
+Notas
+- Si TELEGRAM_UPLOAD_CHATS está vacío el bot NO acepta planillas (sólo consulta).
+  Así podés habilitarlo en un bot y no en los otros.
+- Sólo pueden subir los ids de esa lista; a los demás les responde "sin permiso".
+  Quien está en la lista también puede consultar aunque no esté en
+  TELEGRAM_ALLOWED_CHATS.
+- Por Telegram el máximo es 20 MB por archivo (límite de Telegram). Si la planilla
+  pesa más, subila por la web.
+- UPLOAD_TOKEN sigue aplicando sólo a la web; en Telegram el permiso es la lista de ids.
+- Conviene mandarla por chat privado con el bot: en grupos, con la privacidad del
+  bot activada, Telegram puede no entregarle los archivos.
